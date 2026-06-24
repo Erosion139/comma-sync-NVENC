@@ -40,26 +40,26 @@ final class SyncRunner: ObservableObject {
     private var proc: Process?
     private var pending: [Job] = []
     private var cancelled = false
-    private var cfg: (out: String, chunks: String, del: Bool, audio: Bool, script: String)?
+    private var cfg: (out: String, chunks: String, del: Bool, audio: Bool, limit: Bool, script: String)?
 
-    func startSync(output: String, chunks: String, autoDelete: Bool, syncAudio: Bool, script: String) {
+    func startSync(output: String, chunks: String, autoDelete: Bool, syncAudio: Bool, limitPower: Bool, script: String) {
         begin(jobs: [Job(route: nil, args: [])], routes: [],
-              output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, script: script)
+              output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, limitPower: limitPower, script: script)
     }
     func startBatch(routes: [String], output: String, chunks: String, autoDelete: Bool,
-                    syncAudio: Bool, script: String) {
+                    syncAudio: Bool, limitPower: Bool, script: String) {
         begin(jobs: routes.map { Job(route: $0, args: ["--restitch", $0]) }, routes: routes,
-              output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, script: script)
+              output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, limitPower: limitPower, script: script)
     }
 
     private func begin(jobs: [Job], routes: [String], output: String, chunks: String,
-                       autoDelete: Bool, syncAudio: Bool, script: String) {
+                       autoDelete: Bool, syncAudio: Bool, limitPower: Bool, script: String) {
         guard !isRunning, !jobs.isEmpty else { return }
         guard FileManager.default.fileExists(atPath: script) else {
             log = "ERROR: comma-sync.sh not found at:\n\(script)\n"; return
         }
         pending = jobs
-        cfg = (output, chunks, autoDelete, syncAudio, script)
+        cfg = (output, chunks, autoDelete, syncAudio, limitPower, script)
         cancelled = false
         batchTotal = jobs.count
         batchDone = 0
@@ -94,6 +94,7 @@ final class SyncRunner: ObservableObject {
         if !cfg.chunks.isEmpty { env["CHUNKS_DIR"] = cfg.chunks }
         env["CLEAN_RAW"] = cfg.del ? "1" : "0"
         env["WITH_AUDIO"] = cfg.audio ? "1" : "0"
+        if cfg.limit { env["BWLIMIT"] = "3m" }   // throttle to ~3 MB/s for weak power sources
         p.environment = env
 
         let pipe = Pipe()
@@ -189,6 +190,7 @@ struct ContentView: View {
     @AppStorage("chunksDir") private var chunksDir = ""
     @AppStorage("autoDelete") private var autoDelete = false
     @AppStorage("syncAudio") private var syncAudio = true
+    @AppStorage("limitPower") private var limitPower = false
     @StateObject private var runner = SyncRunner()
     @State private var showDrives = false
     @State private var drives: [Drive] = []
@@ -235,6 +237,13 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Toggle(isOn: $limitPower) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Limit speed for weak power sources")
+                    Text("Caps the transfer to ~3 MB/s to lower the comma's power draw — use if it reboots mid-transfer")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
 
             HStack(spacing: 10) {
                 if runner.isRunning {
@@ -261,14 +270,15 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 600)
+        .frame(width: 580, height: 648)
         .onAppear(perform: setDefaults)
         .sheet(isPresented: $showDrives) {
             DrivesSheet(drives: drives, isLoading: loadingDrives, runner: runner,
                         onBatch: { routes in
                             guard !routes.isEmpty, !runner.isRunning else { return }
                             runner.startBatch(routes: routes, output: outputDir, chunks: chunksDir,
-                                              autoDelete: autoDelete, syncAudio: syncAudio, script: scriptPath)
+                                              autoDelete: autoDelete, syncAudio: syncAudio,
+                                              limitPower: limitPower, script: scriptPath)
                         },
                         onClose: { showDrives = false })
         }
@@ -346,7 +356,7 @@ struct ContentView: View {
 
     private func syncNow() {
         runner.startSync(output: outputDir, chunks: chunksDir, autoDelete: autoDelete,
-                         syncAudio: syncAudio, script: scriptPath)
+                         syncAudio: syncAudio, limitPower: limitPower, script: scriptPath)
     }
 
     // Open the indexing page. Re-index only when idle (avoid a second SSH session
