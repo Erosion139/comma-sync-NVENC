@@ -138,6 +138,7 @@ Settings are environment variables:
 | `REMOTE_PORT` | `22` | SSH port (older devices used `8022`) |
 | `SSH_KEY` | `~/.ssh/id_ed25519` | Private key to authenticate with |
 | `USE_USB` | `0` | `1` = transfer over USB/ADB instead of WiFi (see below) |
+| `BWLIMIT` | _(none)_ | Cap the transfer rate (e.g. `3m` = 3 MB/s). Lowers the comma's power draw — use if it reboots mid-transfer (see Troubleshooting) |
 
 # Wired (USB) — fallback only, not faster
 
@@ -166,6 +167,21 @@ High-value contribution opportunities:
   Qt) that calls the same script/core and mirrors the macOS app's screens.
 
 Fork the repo, work on a branch, and open a pull request.
+
+# Troubleshooting
+
+**The comma reboots every ~10 minutes during a transfer.** This is almost always
+**power**, not the transfer overloading the CPU. The comma 3X has a small internal
+battery; if its external supply can't fully power the device under load, it runs the
+deficit off the battery and browns out after ~10 minutes (then reboots and repeats).
+The script auto-resumes, but to stop the reboots:
+
+- **Best:** transfer with the **engine running** (alternator → stable harness power), or
+  power the device from a proper **high-current USB-C supply** (not a laptop port or a
+  weak charger). Make sure the cable is fully seated.
+- **Mitigate:** lower the draw with `BWLIMIT`, e.g. `BWLIMIT=3m ./comma-sync.sh`.
+- It is **not** thermal — the comma shuts down near ~95 °C; under transfer it sits far
+  below that.
 
 # License
 

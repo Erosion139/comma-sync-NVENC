@@ -51,6 +51,9 @@ USE_USB="${USE_USB:-0}"                          # 1 = transfer over a USB/ADB l
                                                #     A fallback for when WiFi isn't available —
                                                #     it is NOT faster than WiFi on the comma 3X.
 USB_PORT="${USB_PORT:-2222}"                     # local port used to tunnel SSH over ADB
+BWLIMIT="${BWLIMIT:-}"                            # optional rsync transfer cap (e.g. 3m = 3 MB/s).
+                                               #     Lowers the comma's power draw — set this if the
+                                               #     device browns out / reboots mid-transfer.
 REMOTE_USER="comma"
 REMOTE_PATH="/data/media/0/realdata/"
 RSYNC="$(command -v /opt/homebrew/bin/rsync || command -v rsync)"
@@ -232,6 +235,7 @@ pull_route() {
   resolve_comma_ip || return 1
   echo "   downloading ${route} from ${COMMA_IP}..."
   "$RSYNC" -a --info=progress2 --no-inc-recursive --partial --append-verify --timeout=120 --prune-empty-dirs \
+    --rsync-path="nice -n 19 rsync" ${BWLIMIT:+--bwlimit=$BWLIMIT} \
     --include="${route}--*/" \
     --include="${route}--*/*.hevc" \
     --include="${route}--*/qcamera.ts" \
@@ -434,6 +438,7 @@ if resolve_comma_ip; then
   # prevents re-downloading already-processed drives, so --ignore-existing isn't needed.
   attempt=0; max_attempts=8
   until "$RSYNC" -a --info=progress2 --no-inc-recursive --partial --append-verify --timeout=120 --prune-empty-dirs \
+    --rsync-path="nice -n 19 rsync" ${BWLIMIT:+--bwlimit=$BWLIMIT} \
     --exclude-from="$EXCLUDES" \
     --include='*/' --include='*.hevc' --include='qcamera.ts' --exclude='*' \
     -e "$SSH_OPTS" \
