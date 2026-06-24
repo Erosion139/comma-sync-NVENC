@@ -8,6 +8,10 @@ comma/openpilot store footage as one-minute **segments** of raw HEVC, split per 
 in `/data/media/0/realdata/` on the device. Getting a watchable video out normally means
 SSH, `scp`, and manual `ffmpeg` work. Comma Sync does it all for you:
 
+![Comma Sync demo](docs/demo.gif)
+
+*(Demo uses example data — drive names, sizes, and paths are all made up.)*
+
 - 🔍 **Auto-discovers** the device on your WiFi (its IP usually changes every connect).
 - ⬇️ **Pulls only new drives** — a ledger tracks what's done, so nothing re-downloads.
 - 🎬 **Stitches** each drive into one MP4 per camera (road / wide / driver), named by the
