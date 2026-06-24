@@ -49,8 +49,7 @@ brew install rsync ffmpeg
 **Option A — Download the ready-made app (easiest):**
 Go to the [**Releases page**](https://github.com/sourylime/comma-sync/releases/latest),
 download **`Comma-Sync-macOS.zip`**, and double-click it to unzip. You'll get
-**`Comma Sync.app`** plus `comma-sync.sh` — keep those two together in a folder (e.g. drag
-them into your Applications or Documents folder).
+**`Comma Sync.app`** — it's self-contained, so just drag it into your Applications folder.
 
 **Option B — Build it yourself from the code:**
 On the project's [GitHub page](https://github.com/sourylime/comma-sync), click the green
