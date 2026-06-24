@@ -170,3 +170,7 @@ Fork the repo, work on a branch, and open a pull request.
 # License
 
 [MIT](LICENSE) © sourylime — do whatever you like; no warranty.
+
+### Donations
+
+Completely optional, but graciously accepted 🙏 — Bitcoin: **[BITCOIN ADDRESS TO BE ADDED]**
