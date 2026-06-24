@@ -54,6 +54,9 @@ USB_PORT="${USB_PORT:-2222}"                     # local port used to tunnel SSH
 BWLIMIT="${BWLIMIT:-}"                            # optional rsync transfer cap (e.g. 3m = 3 MB/s).
                                                #     Lowers the comma's power draw — set this if the
                                                #     device browns out / reboots mid-transfer.
+SSH_CIPHER="${SSH_CIPHER:-aes128-gcm@openssh.com}" # HW-accelerated on the comma 3X (ARMv8 crypto):
+                                               #     ~20% faster + less CPU/heat than the default
+                                               #     chacha20. Set empty to use SSH's default.
 REMOTE_USER="comma"
 REMOTE_PATH="/data/media/0/realdata/"
 RSYNC="$(command -v /opt/homebrew/bin/rsync || command -v rsync)"
@@ -84,7 +87,7 @@ fi
 
 # Ignore host keys for this LAN device — they change on every reflash, which would
 # otherwise trigger a "host identification changed" error and block the connection.
-SSH_BASE="-i ${SSH_KEY} -p ${REMOTE_PORT} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+SSH_BASE="-i ${SSH_KEY} -p ${REMOTE_PORT} ${SSH_CIPHER:+-c $SSH_CIPHER} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 SSH_OPTS="ssh ${SSH_BASE} -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=6"
 
 mkdir -p "$STAGING"
