@@ -72,7 +72,7 @@ trap cleanup EXIT
 # whole pipeline at localhost. Same speed or slower than WiFi on the comma 3X — only
 # worth it when no WiFi is available. Requires ADB enabled on the device (Developer menu).
 if [ "$USE_USB" = "1" ]; then
-  command -v adb >/dev/null 2>&1 || { echo "!! USE_USB=1 needs adb: brew install --cask android-platform-tools"; exit 1; }
+  command -v adb >/dev/null 2>&1 || { echo "!! USE_USB=1 needs adb (macOS: brew install --cask android-platform-tools · Linux: apt install android-tools-adb)"; exit 1; }
   adb get-state >/dev/null 2>&1 || { echo "!! No ADB device. Enable ADB on the comma (Settings -> Developer) and connect USB."; exit 1; }
   echo "==> Using USB (ADB) link. NOTE: not faster than WiFi on the comma 3X — use only when WiFi is unavailable."
   adb forward "tcp:${USB_PORT}" "tcp:${REMOTE_PORT}" >/dev/null
@@ -86,6 +86,30 @@ SSH_OPTS="ssh ${SSH_BASE} -o ConnectTimeout=10 -o ServerAliveInterval=10 -o Serv
 
 mkdir -p "$STAGING"
 touch "$LEDGER"
+
+# ---- portability shims (macOS vs Linux) -------------------------------------
+case "$(uname -s)" in Darwin) IS_MAC=1 ;; *) IS_MAC=0 ;; esac
+
+# epoch mtime of a file
+_mtime() { if [ "$IS_MAC" = 1 ]; then stat -f %m "$1"; else stat -c %Y "$1"; fi; }
+# format an epoch with a strftime string (e.g. "+%Y-%m-%d_%H-%M-%S")
+_fmtdate() { if [ "$IS_MAC" = 1 ]; then date -r "$1" "$2"; else date -d "@$1" "$2"; fi; }
+# TCP connect probe (~1s). BSD nc uses -G for connect timeout; GNU/ncat don't.
+_ncz() {
+  if [ "$IS_MAC" = 1 ]; then nc -z -G 1 -w 1 "$1" "$2" >/dev/null 2>&1
+  else nc -z -w 1 "$1" "$2" >/dev/null 2>&1; fi
+}
+# this machine's LAN IP (for the subnet scan)
+_localip() {
+  if [ "$IS_MAC" = 1 ]; then
+    local iface; iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
+    ipconfig getifaddr "${iface:-en0}" 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || true
+  else
+    ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}' \
+      || hostname -I 2>/dev/null | awk '{print $1}'
+  fi
+}
+# -----------------------------------------------------------------------------
 
 # Map a camera file to a friendly label.
 label_for() {
@@ -105,9 +129,9 @@ route_start_stamp() {
           | while IFS= read -r d; do printf '%s\t%s\n' "${d##*--}" "$d"; done \
           | sort -n -k1,1 | head -1 | cut -f2)"
   [ -n "$seg0" ] || return 1
-  epoch="$(for f in "$STAGING/$seg0"/*.hevc; do [ -e "$f" ] && stat -f %m "$f"; done | sort -n | head -1)"
+  epoch="$(for f in "$STAGING/$seg0"/*.hevc; do [ -e "$f" ] && _mtime "$f"; done | sort -n | head -1)"
   [ -n "$epoch" ] || return 1
-  date -r "$epoch" "+%Y-%m-%d_%H-%M-%S"
+  _fmtdate "$epoch" "+%Y-%m-%d_%H-%M-%S"
 }
 
 # Newest chunk mtime for a route (epoch) — used to tell if a drive is still recording.
@@ -115,12 +139,12 @@ route_newest_mtime() {
   local route="$1" s f
   for s in "$STAGING/${route}--"*; do
     [ -d "$s" ] || continue
-    for f in "$s"/*.hevc; do [ -e "$f" ] && stat -f %m "$f"; done
+    for f in "$s"/*.hevc; do [ -e "$f" ] && _mtime "$f"; done
   done | sort -n | tail -1
 }
 
 # Quick TCP check so a stale/expected IP fails fast (~1s) instead of a long SSH timeout.
-port_open() { nc -z -G 1 -w 1 "$1" "$REMOTE_PORT" >/dev/null 2>&1; }
+port_open() { _ncz "$1" "$REMOTE_PORT"; }
 
 # Is the host at $1 actually our comma? (SSH in with our key, look for the
 # openpilot install — present on every comma even before any drives are recorded)
@@ -154,9 +178,7 @@ resolve_comma_ip() {
 
   # Find our active interface's subnet (e.g. 192.168.1).
   local iface localip base i tmp
-  iface="$(route -n get default 2>/dev/null | awk '/interface:/{print $2; exit}')"
-  localip="$(ipconfig getifaddr "${iface:-en0}" 2>/dev/null || true)"
-  [ -z "$localip" ] && localip="$(ipconfig getifaddr en1 2>/dev/null || true)"
+  localip="$(_localip)"
   if [ -z "$localip" ]; then
     echo "!! Couldn't determine this Mac's network. Set COMMA_IP manually." >&2; return 1
   fi
@@ -166,7 +188,7 @@ resolve_comma_ip() {
   tmp="$(mktemp)"
   # Parallel TCP scan, throttled in batches so we don't spawn 254 procs at once.
   for i in $(seq 1 254); do
-    ( nc -z -G 1 -w 1 "${base}.${i}" "$REMOTE_PORT" >/dev/null 2>&1 && echo "${base}.${i}" >> "$tmp" ) &
+    ( _ncz "${base}.${i}" "$REMOTE_PORT" && echo "${base}.${i}" >> "$tmp" ) &
     if [ $((i % 64)) -eq 0 ]; then wait; fi
   done
   wait
@@ -363,7 +385,7 @@ cmd_list() {
   while IFS='|' read -r r mt cams cnt sz; do
     [ -n "$r" ] || continue
     grep -qxF "$r" "$seen" && continue
-    if [ -n "$mt" ]; then dstamp="$(date -r "$mt" "+%Y-%m-%d_%H-%M-%S")"; else dstamp="$r"; fi
+    if [ -n "$mt" ]; then dstamp="$(_fmtdate "$mt" "+%Y-%m-%d_%H-%M-%S")"; else dstamp="$r"; fi
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$r" "$dstamp" "$(labels_csv "$cams")" "-" "${sz:-0}" "${cnt:-0}" "device"
   done < <(device_drives_remote || true)
 

@@ -100,15 +100,26 @@ The comma only allows computers whose SSH key is on a GitHub account you tell it
 
 ---
 
-# Command line (works on any OS with bash)
+# Command line — macOS & Linux
 
-Prefer the terminal, or on Linux? The core is a single script:
+The core is a single script that **auto-detects macOS or Linux** (no flags needed):
 
 ```bash
 ./comma-sync.sh                 # find the comma, pull new drives, stitch them
 ./comma-sync.sh --list          # list drives on your computer + still on the comma
 ./comma-sync.sh --restitch <route>   # re-make one drive (re-downloads if needed)
 ```
+
+**Linux setup:** install the tools it shells out to, then run the script:
+
+```bash
+sudo apt install rsync ffmpeg openssh-client netcat-openbsd   # Debian/Ubuntu
+# (Fedora: sudo dnf install rsync ffmpeg openssh-clients nmap-ncat)
+./comma-sync.sh
+```
+
+**Windows:** run it inside **WSL** or **Git Bash** with those same tools installed.
+(A native Windows experience is on the roadmap — see Contributing.)
 
 Settings are environment variables:
 
@@ -138,19 +149,19 @@ No WiFi where you park? You can transfer over a USB-C cable using the comma's AD
 
 # Contributing & other operating systems
 
-PRs and forks welcome! The command-line script is the portable core; the GUI app is
-macOS-only. To help it run on **Linux** or **Windows** (WSL/Git Bash), these are the
-macOS-specific spots to adapt:
+PRs and forks welcome! Current status:
 
-| Feature | macOS (current) | Linux/other |
-|---------|-----------------|-------------|
-| File mtime | `stat -f %m` | `stat -c %Y` |
-| Format epoch as date | `date -r EPOCH` | `date -d @EPOCH` |
-| Find LAN subnet | `route -n get default` + `ipconfig getifaddr` | `ip route` / `hostname -I` |
-| Port scan | `nc -G 1 -w 1` (BSD flags) | adjust `nc` flags |
+- **CLI:** runs natively on **macOS and Linux** (auto-detects).
+- **GUI:** macOS only (SwiftUI).
 
-Fork the repo, make your changes on a branch, and open a pull request — a Linux/Windows
-GUI would be a great addition.
+High-value contribution opportunities:
+
+- **A native Windows path** — today Windows needs WSL/Git Bash. A self-contained core
+  (e.g. a small Go binary that calls `ffmpeg`/`rsync`/`ssh`) would remove that.
+- **A Linux or Windows GUI** — ideally one cross-platform front-end (Tauri, Flutter, or
+  Qt) that calls the same script/core and mirrors the macOS app's screens.
+
+Fork the repo, work on a branch, and open a pull request.
 
 # License
 
