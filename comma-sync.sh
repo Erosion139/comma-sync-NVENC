@@ -439,7 +439,12 @@ if resolve_comma_ip; then
   # comma devices drop WiFi often, so keep partial files and retry on disconnects.
   # --partial/--append-verify resumes interrupted files; the ledger (above) is what
   # prevents re-downloading already-processed drives, so --ignore-existing isn't needed.
-  attempt=0; max_attempts=8
+  # The comma may reboot repeatedly mid-transfer (e.g. on weak power). rsync's
+  # --partial/--append-verify resumes each interrupted file (finished files are
+  # skipped, so nothing already downloaded is re-transferred), and the ledger keeps
+  # done drives out entirely. We just need to outlast the reboots and re-find the
+  # device if it comes back on a new IP — so retry generously and re-discover.
+  attempt=0; max_attempts="${MAX_ATTEMPTS:-40}"
   until "$RSYNC" -a --info=progress2 --no-inc-recursive --partial --append-verify --timeout=120 --prune-empty-dirs \
     --rsync-path="nice -n 19 rsync" ${BWLIMIT:+--bwlimit=$BWLIMIT} \
     --exclude-from="$EXCLUDES" \
@@ -449,12 +454,17 @@ if resolve_comma_ip; then
     "$STAGING/"; do
     attempt=$((attempt + 1))
     if [ "$attempt" -ge "$max_attempts" ]; then
-      echo "!! Could not sync from the device (offline, or WiFi keeps dropping)."
-      echo "   Continuing with whatever is already downloaded locally..."
+      echo "!! Paused after ${max_attempts} reconnect attempts. Just run it again —"
+      echo "   finished files are kept and resume, so nothing already downloaded re-transfers."
       break
     fi
-    echo "   ...connection dropped, resuming (attempt ${attempt}/${max_attempts}) in 5s"
-    sleep 5
+    echo "   ...dropped (the comma may be rebooting); waiting for it to come back (attempt ${attempt}/${max_attempts})..."
+    sleep 8
+    # Usually it returns on the same IP (cheap retry). Every few tries, re-discover
+    # in case a reboot moved it to a new address — rsync resumes either way.
+    if [ $((attempt % 6)) -eq 0 ] && ! port_open "$COMMA_IP" "$REMOTE_PORT"; then
+      resolve_comma_ip >/dev/null 2>&1 || true
+    fi
   done
 else
   echo "==> Skipping download; stitching whatever is already in ${STAGING}/."
