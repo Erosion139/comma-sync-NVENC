@@ -1,5 +1,9 @@
 # Comma Sync
 
+[![CI](https://github.com/sourylime/comma-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/sourylime/comma-sync/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Roadmap](https://img.shields.io/badge/Roadmap-see%20plan-brightgreen.svg)](ROADMAP.md)
+
 Pull dashcam footage off your [comma](https://comma.ai) device over your local
 network and stitch each drive into a single playable video — **with audio** — without
 uploading anything to the cloud.
