@@ -1,0 +1,20 @@
+# Build output
+Comma Sync.app/
+macos-app/CommaSync
+*.dSYM/
+
+# Your footage and synced data — never commit
+Comma Footage/
+Raw HEVC Chunks/
+*.hevc
+*.mp4
+*.ts
+.processed_routes
+.last_ip
+
+# macOS cruft
+.DS_Store
+
+# Generated icon artifacts
+macos-app/icon.iconset/
+macos-app/icon.icns

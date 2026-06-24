@@ -1,0 +1,558 @@
+import SwiftUI
+import AppKit
+import Darwin
+
+// Kill a process and all of its descendants (bash -> rsync -> ssh, or ffmpeg).
+private func childPids(_ pid: pid_t) -> [pid_t] {
+    let p = Process()
+    p.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
+    p.arguments = ["-P", String(pid)]
+    let out = Pipe()
+    p.standardOutput = out
+    p.standardError = Pipe()
+    do { try p.run() } catch { return [] }
+    let data = out.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
+    return (String(data: data, encoding: .utf8) ?? "")
+        .split(whereSeparator: { $0.isNewline }).compactMap { pid_t($0) }
+}
+private func killTree(_ pid: pid_t, _ sig: Int32) {
+    for c in childPids(pid) { killTree(c, sig) }
+    kill(pid, sig)
+}
+
+private struct Job { let route: String?; let args: [String] }
+
+// Runs comma-sync.sh jobs sequentially and streams output. Tracks per-drive state
+// so the indexing page can show live progress and survive being closed/reopened.
+final class SyncRunner: ObservableObject {
+    @Published var log = ""
+    @Published var isRunning = false
+    @Published var batchTotal = 0
+    @Published var batchDone = 0
+    @Published var progress: Double? = nil
+    @Published var statusLine = ""
+    @Published var currentRoute: String? = nil
+    @Published var batchRoutes: [String] = []
+    @Published var doneRoutes: Set<String> = []
+    @Published var failedRoutes: Set<String> = []
+
+    private var proc: Process?
+    private var pending: [Job] = []
+    private var cancelled = false
+    private var cfg: (out: String, chunks: String, del: Bool, audio: Bool, script: String)?
+
+    func startSync(output: String, chunks: String, autoDelete: Bool, syncAudio: Bool, script: String) {
+        begin(jobs: [Job(route: nil, args: [])], routes: [],
+              output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, script: script)
+    }
+    func startBatch(routes: [String], output: String, chunks: String, autoDelete: Bool,
+                    syncAudio: Bool, script: String) {
+        begin(jobs: routes.map { Job(route: $0, args: ["--restitch", $0]) }, routes: routes,
+              output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, script: script)
+    }
+
+    private func begin(jobs: [Job], routes: [String], output: String, chunks: String,
+                       autoDelete: Bool, syncAudio: Bool, script: String) {
+        guard !isRunning, !jobs.isEmpty else { return }
+        guard FileManager.default.fileExists(atPath: script) else {
+            log = "ERROR: comma-sync.sh not found at:\n\(script)\n"; return
+        }
+        pending = jobs
+        cfg = (output, chunks, autoDelete, syncAudio, script)
+        cancelled = false
+        batchTotal = jobs.count
+        batchDone = 0
+        batchRoutes = routes
+        doneRoutes = []
+        failedRoutes = []
+        progress = nil
+        statusLine = ""
+        log = ""
+        isRunning = true
+        startNext()
+    }
+
+    private func startNext() {
+        guard !cancelled, !pending.isEmpty, let cfg = cfg else {
+            isRunning = false
+            currentRoute = nil
+            log += cancelled ? "\n— stopped —\n" : "\n— all done —\n"
+            return
+        }
+        let job = pending.removeFirst()
+        currentRoute = job.route
+        progress = nil
+        statusLine = ""
+
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [cfg.script] + job.args
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["ROOT"] = cfg.out
+        if !cfg.chunks.isEmpty { env["CHUNKS_DIR"] = cfg.chunks }
+        env["CLEAN_RAW"] = cfg.del ? "1" : "0"
+        env["WITH_AUDIO"] = cfg.audio ? "1" : "0"
+        p.environment = env
+
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = pipe
+        pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
+            let d = h.availableData
+            guard !d.isEmpty, let s = String(data: d, encoding: .utf8) else { return }
+            DispatchQueue.main.async { self?.handle(s) }
+        }
+        p.terminationHandler = { [weak self] pr in
+            pipe.fileHandleForReading.readabilityHandler = nil
+            let ok = (pr.terminationStatus == 0)
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                if let r = job.route, !self.cancelled {
+                    if ok { self.doneRoutes.insert(r) } else { self.failedRoutes.insert(r) }
+                }
+                self.batchDone += 1
+                self.currentRoute = nil
+                self.startNext()
+            }
+        }
+        do { try p.run(); proc = p }
+        catch { log += "ERROR launching: \(error.localizedDescription)\n"; isRunning = false }
+    }
+
+    private func handle(_ chunk: String) {
+        for raw in chunk.split(whereSeparator: { $0 == "\r" || $0 == "\n" }) {
+            let line = String(raw)
+            if let (pct, status) = SyncRunner.parseProgress(line) {
+                progress = pct; statusLine = status
+            } else {
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if t.isEmpty { continue }
+                log += line + "\n"
+                if t.contains("Stitching") { progress = nil; statusLine = "Stitching video…" }
+                else if t.contains("Scanning") { progress = nil; statusLine = "Finding the comma…" }
+                else if t.contains("downloading") || t.contains("Syncing new footage") {
+                    progress = nil; statusLine = "Preparing download…"
+                }
+            }
+        }
+    }
+
+    static func parseProgress(_ line: String) -> (Double, String)? {
+        let pattern = #"[\d,]+\s+(\d{1,3})%\s+(\S+)\s+(\d+:\d{2}:\d{2})"#
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = line as NSString
+        guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
+        let pct = Double(ns.substring(with: m.range(at: 1))) ?? 0
+        let rate = ns.substring(with: m.range(at: 2))
+        let eta = ns.substring(with: m.range(at: 3))
+        return (pct / 100.0, "\(rate) · \(eta) left")
+    }
+
+    func cancel() {
+        cancelled = true
+        pending.removeAll()
+        log += "\n==> Stopping…\n"
+        if let pid = proc?.processIdentifier, pid > 0 {
+            killTree(pid, SIGTERM)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { killTree(pid, SIGKILL) }
+        }
+    }
+}
+
+struct Drive: Identifiable {
+    let route: String
+    let stamp: String
+    let cameras: String
+    let hasAudio: Bool?
+    let sizeKB: Int
+    let segments: Int
+    let location: String
+    var id: String { route }
+    var onDevice: Bool { location == "device" }
+    var sizeText: String {
+        let mb = Double(sizeKB) / 1024.0
+        return mb >= 1024 ? String(format: "%.1f GB", mb / 1024) : String(format: "%.0f MB", mb)
+    }
+    var subtitle: String {
+        var parts = [cameras.replacingOccurrences(of: ",", with: ", ")]
+        if let a = hasAudio { parts.append(a ? "audio" : "no audio") }
+        parts.append(sizeText)
+        parts.append("\(segments) min")
+        return parts.joined(separator: " · ")
+    }
+}
+
+struct ContentView: View {
+    @AppStorage("outputDir") private var outputDir = ""
+    @AppStorage("chunksDir") private var chunksDir = ""
+    @AppStorage("autoDelete") private var autoDelete = false
+    @AppStorage("syncAudio") private var syncAudio = true
+    @StateObject private var runner = SyncRunner()
+    @State private var showDrives = false
+    @State private var drives: [Drive] = []
+    @State private var loadingDrives = false
+
+    private var scriptPath: String {
+        let appDir = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
+        let sibling = appDir + "/comma-sync.sh"
+        if FileManager.default.fileExists(atPath: sibling) { return sibling }
+        return Bundle.main.path(forResource: "comma-sync", ofType: "sh") ?? sibling
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(spacing: 12) {
+                Image(systemName: "car.side.fill").font(.system(size: 30)).foregroundStyle(.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Comma Sync").font(.title).bold()
+                    Text("Pull new drives off your comma and stitch them into videos")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+            }
+
+            GroupBox {
+                VStack(spacing: 12) {
+                    folderRow(title: "Stitched videos", systemImage: "film.stack", path: $outputDir)
+                    Divider()
+                    folderRow(title: "Raw HEVC chunks", systemImage: "shippingbox", path: $chunksDir)
+                }
+                .padding(6)
+            }
+
+            Toggle(isOn: $syncAudio) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Include microphone audio")
+                    Text("Adds the recorded audio to the video when it's available")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Toggle(isOn: $autoDelete) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Delete raw chunks after stitching")
+                    Text("Reclaims space automatically once a drive is rendered")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(spacing: 10) {
+                if runner.isRunning {
+                    Button(role: .destructive) { runner.cancel() } label: {
+                        Label("Stop", systemImage: "stop.circle.fill").frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large).buttonStyle(.borderedProminent).tint(.red)
+                } else {
+                    Button(action: syncNow) {
+                        Label("Sync New", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
+                    }
+                    .controlSize(.large).buttonStyle(.borderedProminent).disabled(outputDir.isEmpty)
+                }
+                Button(action: openDrives) {
+                    Label("Index Drives", systemImage: "list.bullet.rectangle")
+                }
+                .controlSize(.large)
+            }
+
+            if runner.isRunning {
+                progressBlock
+            }
+
+            logView
+        }
+        .padding(22)
+        .frame(width: 580, height: 600)
+        .onAppear(perform: setDefaults)
+        .sheet(isPresented: $showDrives) {
+            DrivesSheet(drives: drives, isLoading: loadingDrives, runner: runner,
+                        onBatch: { routes in
+                            guard !routes.isEmpty, !runner.isRunning else { return }
+                            runner.startBatch(routes: routes, output: outputDir, chunks: chunksDir,
+                                              autoDelete: autoDelete, syncAudio: syncAudio, script: scriptPath)
+                        },
+                        onClose: { showDrives = false })
+        }
+    }
+
+    private var progressBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if runner.batchTotal > 1 {
+                Text("Drive \(min(runner.batchDone + 1, runner.batchTotal)) of \(runner.batchTotal)")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let p = runner.progress {
+                ProgressView(value: p)
+                HStack { Text("\(Int(p * 100))%"); Spacer(); Text(runner.statusLine) }
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(runner.statusLine.isEmpty ? "Working…" : runner.statusLine)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+
+    private var logView: some View {
+        ScrollViewReader { sp in
+            ScrollView {
+                Text(runner.log.isEmpty ? "Output will appear here…" : runner.log)
+                    .font(.system(.caption, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(runner.log.isEmpty ? .secondary : .primary)
+                    .textSelection(.enabled)
+                Color.clear.frame(height: 1).id("END")
+            }
+            .padding(8)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+            .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+            .frame(maxHeight: .infinity)
+            .onChange(of: runner.log) { _, _ in withAnimation { sp.scrollTo("END", anchor: .bottom) } }
+        }
+    }
+
+    @ViewBuilder
+    private func folderRow(title: String, systemImage: String, path: Binding<String>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.callout).bold()
+                Text(path.wrappedValue.isEmpty ? "Not set" : path.wrappedValue)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button("Choose…") { choose(path) }
+        }
+    }
+
+    private func choose(_ binding: Binding<String>) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Select"
+        if panel.runModal() == .OK, let url = panel.url { binding.wrappedValue = url.path }
+    }
+
+    private func setDefaults() {
+        if outputDir.isEmpty {
+            let appDir = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
+            outputDir = appDir + "/Comma Footage"
+        }
+        if chunksDir.isEmpty { chunksDir = outputDir + "/Raw HEVC Chunks" }
+    }
+
+    private func syncNow() {
+        runner.startSync(output: outputDir, chunks: chunksDir, autoDelete: autoDelete,
+                         syncAudio: syncAudio, script: scriptPath)
+    }
+
+    // Open the indexing page. Re-index only when idle (avoid a second SSH session
+    // mid-transfer); while running, just reopen to watch live progress.
+    private func openDrives() {
+        showDrives = true
+        guard !runner.isRunning else { return }
+        drives = []
+        loadingDrives = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = loadDrives()
+            DispatchQueue.main.async { drives = result; loadingDrives = false }
+        }
+    }
+
+    private func loadDrives() -> [Drive] {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/bash")
+        p.arguments = [scriptPath, "--list"]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        env["ROOT"] = outputDir
+        if !chunksDir.isEmpty { env["CHUNKS_DIR"] = chunksDir }
+        p.environment = env
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = Pipe()
+        do { try p.run() } catch { return [] }
+        let data = out.fileHandleForReading.readDataToEndOfFile()
+        p.waitUntilExit()
+        let text = String(data: data, encoding: .utf8) ?? ""
+        var result: [Drive] = []
+        for line in text.split(separator: "\n") {
+            let c = line.components(separatedBy: "\t")
+            guard c.count >= 7 else { continue }
+            let audio: Bool? = (c[3] == "1") ? true : (c[3] == "0" ? false : nil)
+            result.append(Drive(route: c[0], stamp: c[1], cameras: c[2], hasAudio: audio,
+                                 sizeKB: Int(c[4]) ?? 0, segments: Int(c[5]) ?? 0, location: c[6]))
+        }
+        return result.sorted { $0.stamp > $1.stamp }
+    }
+}
+
+struct DrivesSheet: View {
+    let drives: [Drive]
+    let isLoading: Bool
+    @ObservedObject var runner: SyncRunner
+    let onBatch: ([String]) -> Void
+    let onClose: () -> Void
+    @State private var selection = Set<String>()
+
+    private var allSelected: Bool { !drives.isEmpty && selection.count == drives.count }
+    private var totalSizeText: String {
+        let kb = drives.reduce(0) { $0 + $1.sizeKB }
+        let gb = Double(kb) / 1024 / 1024
+        return gb >= 1 ? String(format: "%.1f GB", gb) : String(format: "%.0f MB", Double(kb) / 1024)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Indexing Results").font(.title2).bold()
+                    Text(headerSubtitle).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Done") { onClose() }.keyboardShortcut(.cancelAction)
+            }
+
+            if isLoading {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Indexing drives on your comma…").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if drives.isEmpty {
+                VStack(spacing: 6) {
+                    Image(systemName: "tray").font(.system(size: 28)).foregroundStyle(.secondary)
+                    Text("No drives found").foregroundStyle(.secondary)
+                    Text("Nothing on this Mac, and the comma wasn't reachable.")
+                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                if !runner.isRunning {
+                    HStack {
+                        Button(action: toggleAll) {
+                            Image(systemName: allSelected ? "checkmark.circle.fill"
+                                  : (selection.isEmpty ? "circle" : "minus.circle.fill"))
+                            Text("Select all")
+                        }
+                        .buttonStyle(.plain)
+                        Spacer()
+                        Text("\(selection.count) selected").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                ScrollView {
+                    VStack(spacing: 8) { ForEach(drives) { row($0) } }.padding(.vertical, 2)
+                }
+
+                if runner.isRunning {
+                    HStack(spacing: 8) {
+                        ProgressView().controlSize(.small)
+                        Text("Transferring \(runner.doneRoutes.count)/\(runner.batchTotal) — you can close this and come back.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                        Button(role: .destructive) { runner.cancel() } label: { Text("Stop") }
+                    }
+                } else {
+                    HStack(spacing: 10) {
+                        Spacer()
+                        Button("Download Selected") { onBatch(Array(selection)) }
+                            .disabled(selection.isEmpty)
+                        Button("Download All") { onBatch(drives.map { $0.route }) }
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(width: 580, height: 560)
+    }
+
+    private var headerSubtitle: String {
+        if isLoading { return "Scanning this Mac and your comma…" }
+        if drives.isEmpty { return "" }
+        return "\(drives.count) drives · \(totalSizeText) total — on this Mac and still on the comma"
+    }
+
+    @ViewBuilder
+    private func row(_ d: Drive) -> some View {
+        HStack(spacing: 12) {
+            if !runner.isRunning {
+                Button { toggle(d.route) } label: {
+                    Image(systemName: selection.contains(d.route) ? "checkmark.circle.fill" : "circle")
+                        .foregroundStyle(selection.contains(d.route) ? Color.accentColor : .secondary)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Image(systemName: icon(d))
+                .foregroundStyle(d.onDevice ? .secondary : (d.hasAudio == true ? Color.accentColor : .secondary))
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(d.stamp).font(.callout).bold()
+                Text(d.subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            statusAccessory(d)
+        }
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    @ViewBuilder
+    private func statusAccessory(_ d: Drive) -> some View {
+        if runner.currentRoute == d.route {
+            if let p = runner.progress {
+                HStack(spacing: 8) {
+                    ProgressView(value: p).frame(width: 90)
+                    Text("\(Int(p * 100))%").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                }
+            } else {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text(runner.statusLine.isEmpty ? "Starting…" : runner.statusLine)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+        } else if runner.doneRoutes.contains(d.route) {
+            Label("Synced", systemImage: "checkmark.circle.fill")
+                .font(.caption).foregroundStyle(.green).labelStyle(.titleAndIcon)
+        } else if runner.failedRoutes.contains(d.route) {
+            Label("Failed", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption).foregroundStyle(.orange)
+        } else if runner.isRunning && runner.batchRoutes.contains(d.route) {
+            Text("Queued").font(.caption).foregroundStyle(.secondary)
+        } else {
+            HStack(spacing: 10) {
+                Text(d.onDevice ? "on comma" : "on Mac")
+                    .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
+                    .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
+                if !runner.isRunning {
+                    Button(d.onDevice ? "Download" : "Re-sync") { onBatch([d.route]) }
+                }
+            }
+        }
+    }
+
+    private func icon(_ d: Drive) -> String {
+        if d.onDevice { return "arrow.down.circle" }
+        return d.hasAudio == true ? "speaker.wave.2.fill" : "film"
+    }
+    private func toggle(_ route: String) {
+        if selection.contains(route) { selection.remove(route) } else { selection.insert(route) }
+    }
+    private func toggleAll() {
+        if allSelected { selection.removeAll() } else { selection = Set(drives.map { $0.route }) }
+    }
+}
+
+@main
+struct CommaSyncApp: App {
+    var body: some Scene {
+        WindowGroup("Comma Sync") { ContentView() }
+            .windowResizability(.contentSize)
+    }
+}
