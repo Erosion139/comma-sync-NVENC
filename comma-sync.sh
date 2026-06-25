@@ -345,22 +345,29 @@ stitch_route() {
 
   echo "==> Stitching drive ${route}  ->  ${stamp}${suffix}"
 
-  # Microphone audio (from qcamera.ts), if it was recorded.
-  local audio_ts="" cand
+  # Microphone audio: decode each qcamera.ts segment to raw PCM and concatenate.
+  # (Just cat-ing the .ts files loses ~2s of audio per segment boundary, which is
+  # what made the audio drift and cut out ~10s before the video ended.) The comma
+  # mic is 16 kHz mono. Empty if no audio was recorded.
+  local audio_pcm="" audio_dur=0 spcm
   if [ "$WITH_AUDIO" != "0" ]; then
-    cand="$(mktemp "${TMPDIR:-/tmp}/comma_aud_XXXXXX.ts")"
+    audio_pcm="$(mktemp "${TMPDIR:-/tmp}/comma_aud_XXXXXX.pcm")"
+    spcm="$(mktemp "${TMPDIR:-/tmp}/comma_seg_XXXXXX.pcm")"
     for s in "${segs[@]}"; do
-      [ -f "$STAGING/$s/qcamera.ts" ] && cat "$STAGING/$s/qcamera.ts" >> "$cand"
+      [ -f "$STAGING/$s/qcamera.ts" ] || continue
+      if ffmpeg -y -v error -i "$STAGING/$s/qcamera.ts" -map 0:a:0 -f s16le -ar 16000 -ac 1 "$spcm" 2>/dev/null; then
+        cat "$spcm" >> "$audio_pcm"
+      fi
     done
-    if [ -s "$cand" ] && ffprobe -v error -select_streams a -show_entries stream=codec_type \
-         -of csv=p=0 "$cand" 2>/dev/null | grep -q audio; then
-      audio_ts="$cand"
+    rm -f "$spcm"
+    if [ -s "$audio_pcm" ]; then
+      audio_dur="$(awk -v b="$(_size "$audio_pcm")" 'BEGIN{printf "%.4f",(b/2)/16000}')"
     else
-      rm -f "$cand"
+      rm -f "$audio_pcm"; audio_pcm=""
     fi
   fi
 
-  local ok=1 out combined rc atag
+  local ok=1 out combined rc atag frames vdur tempo
   for cam in "${cams[@]}"; do
     lbl="$(label_for "$cam")"
     out="$outdir/${stamp}__${lbl}${suffix}.mp4"
@@ -369,22 +376,27 @@ stitch_route() {
       [ -f "$STAGING/$s/$cam" ] && cat "$STAGING/$s/$cam" >> "$combined"
     done
     rc=0
-    if [ -n "$audio_ts" ]; then
-      ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" -i "$audio_ts" \
-        -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -tag:v hvc1 "$out" || rc=$?
+    if [ -n "$audio_pcm" ]; then
+      # Stretch the audio to exactly fill this camera's video so it stays in sync
+      # and doesn't end early. Count frames cheaply (packets, no decode).
+      frames="$(ffprobe -v error -select_streams v -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$combined" 2>/dev/null)"
+      vdur="$(awk -v f="${frames:-0}" -v r="$FPS" 'BEGIN{ if(r>0 && f>0) printf "%.4f", f/r; else print 0 }')"
+      tempo="$(awk -v a="$audio_dur" -v v="$vdur" 'BEGIN{ if(v>0){t=a/v; if(t<0.5)t=0.5; if(t>2.0)t=2.0; printf "%.6f",t} else print 1 }')"
+      ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" -f s16le -ar 16000 -ac 1 -i "$audio_pcm" \
+        -map 0:v:0 -map 1:a:0 -c:v copy -filter:a "atempo=${tempo}" -c:a aac -b:a 96k -tag:v hvc1 "$out" || rc=$?
     else
       ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" \
         -c copy -tag:v hvc1 "$out" || rc=$?
     fi
     if [ "$rc" -eq 0 ]; then
-      [ -n "$audio_ts" ] && atag=" +audio" || atag=""
+      [ -n "$audio_pcm" ] && atag=" +audio" || atag=""
       echo "      ${lbl}${atag}: $(basename "$out")"
     else
       echo "      !! ffmpeg failed for ${lbl} on ${route}"; ok=0
     fi
     rm -f "$combined"
   done
-  [ -n "$audio_ts" ] && rm -f "$audio_ts"
+  [ -n "$audio_pcm" ] && rm -f "$audio_pcm"
   [ "$ok" = "1" ]
 }
 
