@@ -374,8 +374,12 @@ struct ContentView: View {
     // and persisted across launches). Only scan on the very first open, or when the
     // user taps Refresh. This keeps it instant to get back to and re-stitch from.
     private func openDrives() {
+        // Load the saved list from disk BEFORE presenting the sheet, so the sheet
+        // never renders an empty frame first. Always reflect the saved list if we
+        // have one — even if the in-memory copy got reset.
+        let cached = loadCachedDrives()
+        if !cached.isEmpty { drives = cached }
         showDrives = true
-        if drives.isEmpty { drives = loadCachedDrives() }
         // Only auto-scan the very first time (nothing saved yet). After that, keep
         // showing the saved list until the user explicitly taps Refresh — even
         // across app restarts and when the comma isn't on the network.
