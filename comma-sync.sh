@@ -92,7 +92,7 @@ fi
 SSH_BASE="-i ${SSH_KEY} -p ${REMOTE_PORT} ${SSH_CIPHER:+-c $SSH_CIPHER} -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 SSH_OPTS="ssh ${SSH_BASE} -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=6"
 
-mkdir -p "$STAGING"
+mkdir -p "$ROOT" "$STAGING"
 mkdir -p "$(dirname "$IPCACHE")" 2>/dev/null || true
 touch "$LEDGER"
 
@@ -101,6 +101,8 @@ case "$(uname -s)" in Darwin) IS_MAC=1 ;; *) IS_MAC=0 ;; esac
 
 # epoch mtime of a file
 _mtime() { if [ "$IS_MAC" = 1 ]; then stat -f %m "$1"; else stat -c %Y "$1"; fi; }
+# byte size of a file
+_size() { if [ "$IS_MAC" = 1 ]; then stat -f %z "$1"; else stat -c %s "$1"; fi; }
 # format an epoch with a strftime string (e.g. "+%Y-%m-%d_%H-%M-%S")
 _fmtdate() { if [ "$IS_MAC" = 1 ]; then date -r "$1" "$2"; else date -d "@$1" "$2"; fi; }
 # TCP connect probe (~1s). BSD nc uses -G for connect timeout; GNU/ncat don't.
@@ -273,15 +275,27 @@ labels_csv() {
 # match the device's count when known), 1 = still partial. Empty dirs are pruned
 # before this runs, so only segments with footage are counted.
 route_complete() {
-  local route="$1" nums cnt max expected
+  local route="$1" nums cnt max local_b exp_b s f
   nums="$(find "$STAGING" -mindepth 1 -maxdepth 1 -type d -name "${route}--*" -exec basename {} \; 2>/dev/null \
           | sed -E 's/.*--//' | sort -n)"
   [ -z "$nums" ] && return 1
+
+  # Authoritative when the device was reachable: compare total hevc BYTES. This
+  # catches both missing segments AND truncated/partial files (a reboot can leave
+  # a half-downloaded segment that the count check would wrongly pass).
+  exp_b="$(awk -v r="$route" '$1==r{print $3}' "${DEVCOUNTS:-/dev/null}" 2>/dev/null)"
+  if [ -n "$exp_b" ] && [ "$exp_b" -gt 0 ] 2>/dev/null; then
+    local_b="$(for s in "$STAGING/${route}--"*; do
+                 for f in "$s"/*.hevc; do [ -e "$f" ] && _size "$f"; done
+               done | awk '{s+=$1} END{print s+0}')"
+    [ "${local_b:-0}" -lt "$exp_b" ] && return 1
+    return 0
+  fi
+
+  # Fallback (device offline): contiguous segments 0..max, no gaps.
   cnt="$(printf '%s\n' "$nums" | grep -c .)"
   max="$(printf '%s\n' "$nums" | tail -1)"
-  [ "$cnt" -ne "$((max + 1))" ] && return 1                          # gap = missing segments
-  expected="$(awk -v r="$route" '$1==r{print $2}' "${DEVCOUNTS:-/dev/null}" 2>/dev/null)"
-  [ -n "$expected" ] && [ "$cnt" -lt "$expected" ] && return 1       # missing trailing segments
+  [ "$cnt" -ne "$((max + 1))" ] && return 1
   return 0
 }
 
@@ -357,7 +371,7 @@ stitch_route() {
     rc=0
     if [ -n "$audio_ts" ]; then
       ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" -i "$audio_ts" \
-        -map 0:v:0 -map 1:a:0 -c:v copy -c:a copy -tag:v hvc1 "$out" || rc=$?
+        -map 0:v:0 -map 1:a:0 -c:v copy -c:a aac -tag:v hvc1 "$out" || rc=$?
     else
       ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" \
         -c copy -tag:v hvc1 "$out" || rc=$?
@@ -514,7 +528,9 @@ if [ -n "${COMMA_IP:-}" ] && port_open "$COMMA_IP" "$REMOTE_PORT"; then
     cd /data/media/0/realdata 2>/dev/null || exit 0
     for r in $(ls -1d *--*/ 2>/dev/null | sed -E "s#--[0-9]+/##" | sort -u); do
       [ "$r" = "boot" ] && continue
-      echo "${r} $(ls -1d ${r}--*/ 2>/dev/null | wc -l | tr -d " ")"
+      cnt=$(ls -1d ${r}--*/ 2>/dev/null | wc -l | tr -d " ")
+      hb=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] && stat -c %s "$f"; done | awk "{s+=\$1} END{print s+0}")
+      echo "${r} ${cnt} ${hb}"
     done' 2>/dev/null > "$DEVCOUNTS" || true
 fi
 
