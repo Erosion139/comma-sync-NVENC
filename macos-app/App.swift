@@ -370,11 +370,11 @@ struct ContentView: View {
     // user taps Refresh. This keeps it instant to get back to and re-stitch from.
     private func openDrives() {
         showDrives = true
-        if drives.isEmpty && !loadingDrives && !runner.isRunning { refreshDrives() }
+        if drives.isEmpty && !loadingDrives { refreshDrives() }
     }
 
     private func refreshDrives() {
-        guard !loadingDrives, !runner.isRunning else { return }
+        guard !loadingDrives else { return }
         loadingDrives = true
         DispatchQueue.global(qos: .userInitiated).async {
             let result = loadDrives()
@@ -447,7 +447,7 @@ struct DrivesSheet: View {
                 }
                 Spacer()
                 Button { onRefresh() } label: { Image(systemName: "arrow.clockwise") }
-                    .disabled(isLoading || runner.isRunning)
+                    .disabled(isLoading)
                     .help("Re-scan for the comma and refresh the list")
                 Button("Done") { onClose() }.keyboardShortcut(.cancelAction)
             }

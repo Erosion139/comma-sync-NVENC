@@ -140,7 +140,7 @@ route_start_stamp() {
           | while IFS= read -r d; do printf '%s\t%s\n' "${d##*--}" "$d"; done \
           | sort -n -k1,1 | head -1 | cut -f2)"
   [ -n "$seg0" ] || return 1
-  epoch="$(for f in "$STAGING/$seg0"/*.hevc; do [ -e "$f" ] && _mtime "$f"; done | sort -n | head -1)"
+  epoch="$(for f in "$STAGING/$seg0"/*.hevc; do [ -e "$f" ] || continue; _mtime "$f"; done | sort -n | head -1)"
   [ -n "$epoch" ] || return 1
   _fmtdate "$epoch" "+%Y-%m-%d_%H-%M-%S"
 }
@@ -150,7 +150,7 @@ route_newest_mtime() {
   local route="$1" s f
   for s in "$STAGING/${route}--"*; do
     [ -d "$s" ] || continue
-    for f in "$s"/*.hevc; do [ -e "$f" ] && _mtime "$f"; done
+    for f in "$s"/*.hevc; do [ -e "$f" ] || continue; _mtime "$f"; done
   done | sort -n | tail -1
 }
 
@@ -257,7 +257,7 @@ device_drives_remote() {
       [ "$r" = "boot" ] && continue
       cnt=$(ls -1d ${r}--*/ 2>/dev/null | wc -l | tr -d " ")
       [ "$cnt" = "0" ] && continue
-      mt=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] && stat -c %Y "$f"; done | sort -n | head -1)
+      mt=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] || continue; stat -c %Y "$f"; done | sort -n | head -1)
       cams=$(ls ${r}--*/*.hevc 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u | tr "\n" "," | sed "s/,$//")
       sz=$(du -sk ${r}--* 2>/dev/null | awk "{s+=\$1} END{print s+0}")
       echo "${r}|${mt}|${cams}|${cnt}|${sz}"
@@ -314,7 +314,7 @@ route_complete() {
   exp_b="$(awk -v r="$route" '$1==r{print $3}' "${DEVCOUNTS:-/dev/null}" 2>/dev/null)"
   if [ -n "$exp_b" ] && [ "$exp_b" -gt 0 ] 2>/dev/null; then
     local_b="$(for s in "$STAGING/${route}--"*; do
-                 for f in "$s"/*.hevc; do [ -e "$f" ] && _size "$f"; done
+                 for f in "$s"/*.hevc; do [ -e "$f" ] || continue; _size "$f"; done
                done | awk '{s+=$1} END{print s+0}')"
     [ "${local_b:-0}" -lt "$exp_b" ] && return 1
     return 0
@@ -350,7 +350,7 @@ stitch_route() {
   local cams=()
   while IFS= read -r line; do cams+=("$line"); done < <(
     for s in "${segs[@]}"; do
-      for f in "$STAGING/$s"/*.hevc; do [ -e "$f" ] && basename "$f"; done
+      for f in "$STAGING/$s"/*.hevc; do [ -e "$f" ] || continue; basename "$f"; done
     done | sort -u
   )
   if [ "${#cams[@]}" -eq 0 ]; then echo "   !! no camera footage downloaded for ${route} yet"; return 1; fi
@@ -458,7 +458,7 @@ cmd_list() {
     stamp="$(route_start_stamp "$route" 2>/dev/null || echo "$route")"
     cams_csv="$(
       for s in $(find "$STAGING" -mindepth 1 -maxdepth 1 -type d -name "${route}--*" -exec basename {} \;); do
-        for f in "$STAGING/$s"/*.hevc; do [ -e "$f" ] && basename "$f"; done
+        for f in "$STAGING/$s"/*.hevc; do [ -e "$f" ] || continue; basename "$f"; done
       done | sort -u | while IFS= read -r c; do label_for "$c"; done | paste -sd ',' -
     )"
     audio="$(drive_has_audio "$route")"
@@ -569,7 +569,7 @@ if [ -n "${COMMA_IP:-}" ] && port_open "$COMMA_IP" "$REMOTE_PORT"; then
     for r in $(ls -1d *--*/ 2>/dev/null | sed -E "s#--[0-9]+/##" | sort -u); do
       [ "$r" = "boot" ] && continue
       cnt=$(ls -1d ${r}--*/ 2>/dev/null | wc -l | tr -d " ")
-      hb=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] && stat -c %s "$f"; done | awk "{s+=\$1} END{print s+0}")
+      hb=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] || continue; stat -c %s "$f"; done | awk "{s+=\$1} END{print s+0}")
       echo "${r} ${cnt} ${hb}"
     done' 2>/dev/null > "$DEVCOUNTS" || true
 fi
