@@ -133,8 +133,13 @@ final class SyncRunner: ObservableObject {
                 log += line + "\n"
                 if t.contains("Stitching") { progress = nil; statusLine = "Stitching video…" }
                 else if t.contains("Scanning") { progress = nil; statusLine = "Finding the comma…" }
-                else if t.contains("downloading") || t.contains("Syncing new footage") {
-                    progress = nil; statusLine = "Preparing download…"
+                else if t.contains("downloading") || t.contains("Syncing new footage")
+                        || t.contains("incremental file list") {
+                    // rsync builds the full file list before any bytes move; with a
+                    // big drive this looks like it's "starting over". Make clear it's
+                    // just checking, not re-downloading.
+                    progress = nil
+                    statusLine = "Scanning the comma — skipping files you already have…"
                 }
             }
         }
@@ -370,7 +375,12 @@ struct ContentView: View {
     // user taps Refresh. This keeps it instant to get back to and re-stitch from.
     private func openDrives() {
         showDrives = true
-        if drives.isEmpty && !loadingDrives { refreshDrives() }
+        if drives.isEmpty { drives = loadCachedDrives() }
+        // Only auto-scan the very first time (nothing saved yet). After that, keep
+        // showing the saved list until the user explicitly taps Refresh — even
+        // across app restarts and when the comma isn't on the network.
+        if drives.isEmpty && !loadingDrives
+            && UserDefaults.standard.data(forKey: "cachedDrives") == nil { refreshDrives() }
     }
 
     private func refreshDrives() {
@@ -379,8 +389,11 @@ struct ContentView: View {
         DispatchQueue.global(qos: .userInitiated).async {
             let result = loadDrives()
             DispatchQueue.main.async {
-                drives = result
                 loadingDrives = false
+                // Keep the saved list if a scan comes back empty (comma offline,
+                // moved chunks, etc.) instead of blanking what the user had.
+                guard !result.isEmpty else { return }
+                drives = result
                 if let data = try? JSONEncoder().encode(result) {
                     UserDefaults.standard.set(data, forKey: "cachedDrives")
                 }
