@@ -162,7 +162,7 @@ final class SyncRunner: ObservableObject {
     }
 }
 
-struct Drive: Identifiable {
+struct Drive: Identifiable, Codable {
     let route: String
     let stamp: String
     let cameras: String
@@ -271,7 +271,10 @@ struct ContentView: View {
         }
         .padding(22)
         .frame(width: 580, height: 648)
-        .onAppear(perform: setDefaults)
+        .onAppear {
+            setDefaults()
+            if drives.isEmpty { drives = loadCachedDrives() }
+        }
         .sheet(isPresented: $showDrives) {
             DrivesSheet(drives: drives, isLoading: loadingDrives, runner: runner,
                         onBatch: { routes in
@@ -280,6 +283,7 @@ struct ContentView: View {
                                               autoDelete: autoDelete, syncAudio: syncAudio,
                                               limitPower: limitPower, script: scriptPath)
                         },
+                        onRefresh: { refreshDrives() },
                         onClose: { showDrives = false })
         }
     }
@@ -361,15 +365,33 @@ struct ContentView: View {
 
     // Open the indexing page. Re-index only when idle (avoid a second SSH session
     // mid-transfer); while running, just reopen to watch live progress.
+    // Open the page WITHOUT re-scanning — show the last results (cached in memory
+    // and persisted across launches). Only scan on the very first open, or when the
+    // user taps Refresh. This keeps it instant to get back to and re-stitch from.
     private func openDrives() {
         showDrives = true
-        guard !runner.isRunning else { return }
-        drives = []
+        if drives.isEmpty && !loadingDrives && !runner.isRunning { refreshDrives() }
+    }
+
+    private func refreshDrives() {
+        guard !loadingDrives, !runner.isRunning else { return }
         loadingDrives = true
         DispatchQueue.global(qos: .userInitiated).async {
             let result = loadDrives()
-            DispatchQueue.main.async { drives = result; loadingDrives = false }
+            DispatchQueue.main.async {
+                drives = result
+                loadingDrives = false
+                if let data = try? JSONEncoder().encode(result) {
+                    UserDefaults.standard.set(data, forKey: "cachedDrives")
+                }
+            }
         }
+    }
+
+    private func loadCachedDrives() -> [Drive] {
+        guard let data = UserDefaults.standard.data(forKey: "cachedDrives"),
+              let d = try? JSONDecoder().decode([Drive].self, from: data) else { return [] }
+        return d
     }
 
     private func loadDrives() -> [Drive] {
@@ -405,6 +427,7 @@ struct DrivesSheet: View {
     let isLoading: Bool
     @ObservedObject var runner: SyncRunner
     let onBatch: ([String]) -> Void
+    let onRefresh: () -> Void
     let onClose: () -> Void
     @State private var selection = Set<String>()
 
@@ -423,6 +446,9 @@ struct DrivesSheet: View {
                     Text(headerSubtitle).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button { onRefresh() } label: { Image(systemName: "arrow.clockwise") }
+                    .disabled(isLoading || runner.isRunning)
+                    .help("Re-scan for the comma and refresh the list")
                 Button("Done") { onClose() }.keyboardShortcut(.cancelAction)
             }
 
