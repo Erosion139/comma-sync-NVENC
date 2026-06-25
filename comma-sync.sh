@@ -164,6 +164,25 @@ is_comma() {
     "${REMOTE_USER}@$1" 'test -d /data/openpilot' >/dev/null 2>&1
 }
 
+# Find the comma via mDNS/Bonjour — no subnet scan, gentle on WiFi, and it keeps
+# working when the DHCP IP changes. The comma's avahi advertises an _ssh._tcp
+# service named like "comma SSH - tizi - [comma-XXXX]". Echoes its .local hostname.
+discover_mdns() {
+  local host="" tmp p
+  if command -v dns-sd >/dev/null 2>&1; then          # macOS
+    tmp="$(mktemp)"
+    dns-sd -B _ssh._tcp local >"$tmp" 2>/dev/null &
+    p=$!; sleep 2; kill "$p" 2>/dev/null || true; wait "$p" 2>/dev/null || true
+    host="$(sed -nE 's/.*\[(comma-[A-Za-z0-9]+)\].*/\1/p' "$tmp" | head -1)"
+    rm -f "$tmp"
+  elif command -v avahi-browse >/dev/null 2>&1; then   # Linux
+    host="$(avahi-browse -rtp _ssh._tcp 2>/dev/null | awk -F';' 'tolower($0) ~ /comma/ && $1=="=" {print $7; exit}')"
+  fi
+  [ -n "$host" ] || return 1
+  case "$host" in *.local|*.local.) host="${host%.}" ;; *) host="${host}.local" ;; esac
+  printf '%s\n' "$host"
+}
+
 # Find the comma's current IP: try preferred + cached first, then scan the subnet.
 # On success, sets COMMA_IP and caches it. Returns non-zero if nothing is found.
 resolve_comma_ip() {
@@ -183,6 +202,15 @@ resolve_comma_ip() {
   if [ "$AUTO_DISCOVER" != "1" ]; then
     echo "!! Couldn't reach the comma at ${COMMA_IP} (AUTO_DISCOVER is off)." >&2; return 1
   fi
+
+  # Preferred: mDNS (no scan, gentle on WiFi, survives DHCP changes).
+  local mhost
+  mhost="$(discover_mdns 2>/dev/null || true)"
+  if [ -n "$mhost" ] && is_comma "$mhost"; then
+    COMMA_IP="$mhost"; echo "$mhost" > "$IPCACHE"
+    echo "==> Comma found via mDNS (${mhost})" >&2; return 0
+  fi
+
   if ! command -v nc >/dev/null 2>&1; then
     echo "!! 'nc' not found, can't scan the network. Set COMMA_IP manually." >&2; return 1
   fi
