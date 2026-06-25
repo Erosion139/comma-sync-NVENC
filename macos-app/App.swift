@@ -541,7 +541,7 @@ struct DrivesSheet: View {
                     .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
                     .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
                 if !runner.isRunning {
-                    Button(d.onDevice ? "Download" : "Re-sync") { onBatch([d.route]) }
+                    Button(d.onDevice ? "Download" : "Re-stitch") { onBatch([d.route]) }
                 }
             }
         }

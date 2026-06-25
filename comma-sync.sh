@@ -64,11 +64,13 @@ RSYNC="$(command -v /opt/homebrew/bin/rsync || command -v rsync)"
 
 STAGING="${CHUNKS_DIR:-$ROOT/Raw HEVC Chunks}"  # visible: browse/clean these yourself
 LEDGER="$ROOT/.processed_routes"
-IPCACHE="$ROOT/.last_ip"
+IPCACHE="${HOME}/.cache/comma-sync/last_ip"   # global (not per-folder) so discovery
+                                              # works the first time on any new location
 
 # One cleanup hook for temp files and any USB port-forward.
 cleanup() {
   [ -n "${EXCLUDES:-}" ] && rm -f "$EXCLUDES"
+  [ -n "${DEVCOUNTS:-}" ] && rm -f "$DEVCOUNTS"
   [ "$USE_USB" = "1" ] && adb forward --remove "tcp:${USB_PORT}" >/dev/null 2>&1
   return 0
 }
@@ -91,6 +93,7 @@ SSH_BASE="-i ${SSH_KEY} -p ${REMOTE_PORT} ${SSH_CIPHER:+-c $SSH_CIPHER} -o Stric
 SSH_OPTS="ssh ${SSH_BASE} -o ConnectTimeout=10 -o ServerAliveInterval=10 -o ServerAliveCountMax=6"
 
 mkdir -p "$STAGING"
+mkdir -p "$(dirname "$IPCACHE")" 2>/dev/null || true
 touch "$LEDGER"
 
 # ---- portability shims (macOS vs Linux) -------------------------------------
@@ -237,14 +240,23 @@ pull_route() {
   local route="$1"
   resolve_comma_ip || return 1
   echo "   downloading ${route} from ${COMMA_IP}..."
-  "$RSYNC" -a --info=progress2 --no-inc-recursive --partial --append-verify --timeout=120 --prune-empty-dirs \
+  local attempt=0 max="${MAX_ATTEMPTS:-40}"
+  until "$RSYNC" -a --info=progress2 --no-inc-recursive --partial --append-verify --timeout=120 --prune-empty-dirs \
     --rsync-path="nice -n 19 rsync" ${BWLIMIT:+--bwlimit=$BWLIMIT} \
     --include="${route}--*/" \
     --include="${route}--*/*.hevc" \
     --include="${route}--*/qcamera.ts" \
     --exclude='*' \
     -e "$SSH_OPTS" \
-    "${REMOTE_USER}@${COMMA_IP}:${REMOTE_PATH}" "$STAGING/"
+    "${REMOTE_USER}@${COMMA_IP}:${REMOTE_PATH}" "$STAGING/"; do
+    attempt=$((attempt + 1))
+    [ "$attempt" -ge "$max" ] && { echo "   !! gave up after ${max} reconnect attempts (re-run to resume)"; return 1; }
+    echo "   ...dropped (the comma may be rebooting); reconnecting (attempt ${attempt}/${max})..."
+    sleep 8
+    if [ $((attempt % 6)) -eq 0 ] && ! port_open "$COMMA_IP" "$REMOTE_PORT"; then
+      resolve_comma_ip >/dev/null 2>&1 || true
+    fi
+  done
 }
 
 # Comma-separated camera filenames -> friendly labels (ecamera.hevc,fcamera.hevc -> wide,road)
@@ -255,6 +267,22 @@ labels_csv() {
     out="${out:+$out,}$(label_for "$cam")"
   done
   echo "$out"
+}
+
+# Is a route fully downloaded? 0 = complete (segments are contiguous 0..max, and
+# match the device's count when known), 1 = still partial. Empty dirs are pruned
+# before this runs, so only segments with footage are counted.
+route_complete() {
+  local route="$1" nums cnt max expected
+  nums="$(find "$STAGING" -mindepth 1 -maxdepth 1 -type d -name "${route}--*" -exec basename {} \; 2>/dev/null \
+          | sed -E 's/.*--//' | sort -n)"
+  [ -z "$nums" ] && return 1
+  cnt="$(printf '%s\n' "$nums" | grep -c .)"
+  max="$(printf '%s\n' "$nums" | tail -1)"
+  [ "$cnt" -ne "$((max + 1))" ] && return 1                          # gap = missing segments
+  expected="$(awk -v r="$route" '$1==r{print $2}' "${DEVCOUNTS:-/dev/null}" 2>/dev/null)"
+  [ -n "$expected" ] && [ "$cnt" -lt "$expected" ] && return 1       # missing trailing segments
+  return 0
 }
 
 # Stitch one drive's local chunks into MP4s. $2=1 enables collision-safe naming
@@ -283,6 +311,7 @@ stitch_route() {
       for f in "$STAGING/$s"/*.hevc; do [ -e "$f" ] && basename "$f"; done
     done | sort -u
   )
+  if [ "${#cams[@]}" -eq 0 ]; then echo "   !! no camera footage downloaded for ${route} yet"; return 1; fi
 
   # Collision-safe suffix: lowest N (1 = none) where no camera output exists yet.
   local suffix="" cam lbl
@@ -470,6 +499,25 @@ else
   echo "==> Skipping download; stitching whatever is already in ${STAGING}/."
 fi
 
+# --- 1b. Clean up partial-transfer debris + learn which drives finished -------
+# Interrupted transfers (the comma rebooting) leave empty segment dirs — the dir
+# is created before its hevc is pulled. Remove them so only complete segments count.
+find "$STAGING" -mindepth 1 -maxdepth 1 -type d -name '*--*' 2>/dev/null | while IFS= read -r d; do
+  [ -z "$(find "$d" -maxdepth 1 -name '*.hevc' -print -quit 2>/dev/null)" ] && rm -rf "$d"
+done
+
+# Authoritative segment count per route from the device (only if it's reachable
+# right now — no extra scan), so we skip drives that are still downloading.
+DEVCOUNTS="$(mktemp)"
+if [ -n "${COMMA_IP:-}" ] && port_open "$COMMA_IP" "$REMOTE_PORT"; then
+  ssh $SSH_BASE -o BatchMode=yes -o ConnectTimeout=8 "${REMOTE_USER}@${COMMA_IP}" '
+    cd /data/media/0/realdata 2>/dev/null || exit 0
+    for r in $(ls -1d *--*/ 2>/dev/null | sed -E "s#--[0-9]+/##" | sort -u); do
+      [ "$r" = "boot" ] && continue
+      echo "${r} $(ls -1d ${r}--*/ 2>/dev/null | wc -l | tr -d " ")"
+    done' 2>/dev/null > "$DEVCOUNTS" || true
+fi
+
 # --- 2. Figure out which drives (routes) are staged --------------------------
 ROUTES=()
 while IFS= read -r line; do ROUTES+=("$line"); done < <(
@@ -486,6 +534,12 @@ fi
 for route in "${ROUTES[@]}"; do
   # Already stitched on a previous run? Skip (its raw chunks are just being kept).
   if grep -qxF "$route" "$LEDGER"; then
+    continue
+  fi
+  # Not fully downloaded yet (the comma may still be rebooting)? Leave it for the
+  # next run rather than stitching a partial drive.
+  if ! route_complete "$route"; then
+    echo "==> Skipping ${route}: still downloading (incomplete) — re-run to finish it."
     continue
   fi
   # Hold back a drive only if it looks like it's still being recorded right now
