@@ -373,22 +373,48 @@ stitch_route() {
 
   echo "==> Stitching drive ${route}  ->  ${stamp}${suffix}"
 
-  # Microphone audio: decode each qcamera.ts segment to raw PCM and concatenate.
-  # (Just cat-ing the .ts files loses ~2s of audio per segment boundary, which is
-  # what made the audio drift and cut out ~10s before the video ended.) The comma
-  # mic is 16 kHz mono. Empty if no audio was recorded.
-  local audio_pcm="" audio_dur=0 spcm
+  # Microphone audio, locked to the video segment-by-segment. The comma's mic starts
+  # a few seconds AFTER the camera at the start of a drive (the first qcamera.ts has a
+  # leading gap — e.g. audio doesn't begin until ~10s in), and segments can have small
+  # gaps too. If we just decode the samples and concatenate, every later segment plays
+  # early and the audio runs ahead of the video (more so the longer the drive). So for
+  # each segment we decode its audio *preserving timing* (aresample fills the leading
+  # gap with silence) and fit it to that segment's exact video length, so audio and
+  # video realign at every segment boundary and never drift. The comma mic is 16 kHz
+  # mono. Segments with no audio get silence so they don't shift everything after them.
+  local audio_pcm="" audio_dur=0 spcm rate=16000 segframes segdur tbytes cur had_audio=0
   if [ "$WITH_AUDIO" != "0" ]; then
     audio_pcm="$(mktemp "${TMPDIR:-/tmp}/comma_aud_XXXXXX.pcm")"
     spcm="$(mktemp "${TMPDIR:-/tmp}/comma_seg_XXXXXX.pcm")"
     for s in "${segs[@]}"; do
-      [ -f "$STAGING/$s/qcamera.ts" ] || continue
-      if ffmpeg -y -v error -i "$STAGING/$s/qcamera.ts" -map 0:a:0 -f s16le -ar 16000 -ac 1 "$spcm" 2>/dev/null; then
-        cat "$spcm" >> "$audio_pcm"
+      # This segment's video length, from its frame count (any camera — they're synced).
+      segframes=""
+      for f in "$STAGING/$s"/*.hevc; do
+        [ -e "$f" ] || continue
+        segframes="$(ffprobe -v error -select_streams v -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$f" 2>/dev/null | head -1 | tr -d '[:space:]')"
+        [ -n "$segframes" ] && break
+      done
+      [ -n "$segframes" ] || continue
+      segdur="$(awk -v f="$segframes" -v r="$FPS" 'BEGIN{printf "%.4f", f/r}')"
+      tbytes="$(awk -v d="$segdur" -v r="$rate" 'BEGIN{printf "%d", int(d*r+0.5)*2}')"
+      if [ -f "$STAGING/$s/qcamera.ts" ] && \
+         ffmpeg -y -v error -i "$STAGING/$s/qcamera.ts" -map 0:a:0 \
+           -af "aresample=async=1:first_pts=0,apad" -t "$segdur" \
+           -ar "$rate" -ac 1 -f s16le "$spcm" 2>/dev/null && [ -s "$spcm" ]; then
+        had_audio=1
+        cur="$(_size "$spcm")"
+        if [ "$cur" -ge "$tbytes" ]; then
+          head -c "$tbytes" "$spcm" >> "$audio_pcm"
+        else
+          cat "$spcm" >> "$audio_pcm"
+          head -c "$((tbytes - cur))" /dev/zero >> "$audio_pcm"
+        fi
+      else
+        head -c "$tbytes" /dev/zero >> "$audio_pcm"   # keep sync when a segment has no audio
       fi
     done
     rm -f "$spcm"
-    if [ -s "$audio_pcm" ]; then
+    if [ "$had_audio" = "1" ] && [ -s "$audio_pcm" ]; then
       audio_dur="$(awk -v b="$(_size "$audio_pcm")" 'BEGIN{printf "%.4f",(b/2)/16000}')"
     else
       rm -f "$audio_pcm"; audio_pcm=""
