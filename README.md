@@ -14,7 +14,16 @@ SSH, `scp`, and manual `ffmpeg` work. Comma Sync does it all for you:
 
 ![Comma Sync demo](docs/demo.gif)
 
-*(Demo uses example data — drive names, sizes, and paths are all made up.)*
+### Screenshots
+
+| Index Drives | Sync in progress |
+|:---:|:---:|
+| ![Index Drives — browse and select drives](docs/screenshot-index.png) | ![Sync in progress with live log](docs/screenshot-sync.png) |
+| Browse every drive — on your Mac *and* still on the comma — and download some or all. | Live progress bar and log while it pulls and stitches each drive. |
+
+![Comma Sync in dark mode](docs/screenshot-dark.png)
+
+*Follows your system's light or dark appearance. All screenshots use made-up example data — drive names, sizes, and paths are not real.*
 
 - 🔍 **Auto-discovers** the device on your WiFi (its IP usually changes every connect).
 - ⬇️ **Pulls only new drives** — a ledger tracks what's done, so nothing re-downloads.
