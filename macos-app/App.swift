@@ -196,10 +196,13 @@ struct ContentView: View {
     @AppStorage("autoDelete") private var autoDelete = false
     @AppStorage("syncAudio") private var syncAudio = true
     @AppStorage("limitPower") private var limitPower = false
+    @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
     @StateObject private var runner = SyncRunner()
     @State private var showDrives = false
     @State private var drives: [Drive] = []
     @State private var loadingDrives = false
+    @State private var updateVersion: String? = nil
+    @State private var updateURL = ""
 
     private var scriptPath: String {
         let appDir = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
@@ -210,6 +213,24 @@ struct ContentView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let v = updateVersion {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.down.circle.fill").font(.title3).foregroundStyle(.tint)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("Update available — \(v)").font(.callout).bold()
+                        Text("You're on \(appVersion). Download the latest version.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Download") {
+                        if let u = URL(string: updateURL) { NSWorkspace.shared.open(u) }
+                    }.buttonStyle(.borderedProminent)
+                    Button { updateVersion = nil } label: { Image(systemName: "xmark") }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                }
+                .padding(10)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.accentColor.opacity(0.12)))
+            }
             HStack(spacing: 12) {
                 Image(systemName: "car.side.fill").font(.system(size: 30)).foregroundStyle(.tint)
                 VStack(alignment: .leading, spacing: 2) {
@@ -249,6 +270,16 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Toggle(isOn: $autoUpdateCheck) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Automatically check for updates")
+                    Text("Tells you when a newer version is on GitHub — only reads the public releases list, sends no data")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: autoUpdateCheck) { _, on in
+                if on { checkForUpdate() } else { updateVersion = nil }
+            }
 
             HStack(spacing: 10) {
                 if runner.isRunning {
@@ -279,6 +310,15 @@ struct ContentView: View {
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }
+            checkForUpdate()
+        }
+        .task {
+            // Re-check every 12 hours so the app left running still notices new
+            // releases (checkForUpdate() no-ops while the toggle is off).
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(12 * 60 * 60))
+                checkForUpdate()
+            }
         }
         .sheet(isPresented: $showDrives) {
             DrivesSheet(drives: drives, isLoading: loadingDrives, runner: runner,
@@ -361,6 +401,48 @@ struct ContentView: View {
             outputDir = appDir + "/Comma Footage"
         }
         if chunksDir.isEmpty { chunksDir = outputDir + "/Raw HEVC Chunks" }
+    }
+
+    // ---- update check -------------------------------------------------------
+    // This build's version, from Info.plist (build.sh sets it via APP_VERSION).
+    private var appVersion: String {
+        (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
+    }
+
+    // Ask GitHub for the latest *stable* release (the API skips pre-releases, so the
+    // Linux/Windows GUI beta never shows up here). If it's newer than this build,
+    // surface the banner. Read-only, sends nothing about the user.
+    private func checkForUpdate() {
+        guard autoUpdateCheck else { return }
+        guard let url = URL(string: "https://api.github.com/repos/sourylime/comma-sync/releases/latest") else { return }
+        var req = URLRequest(url: url, timeoutInterval: 8)
+        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let tag = obj["tag_name"] as? String,
+                  let html = obj["html_url"] as? String else { return }
+            let remote = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
+            guard versionGreater(remote, than: appVersion) else { return }
+            DispatchQueue.main.async {
+                updateVersion = tag
+                updateURL = html
+            }
+        }.resume()
+    }
+
+    // Compare dotted numeric versions (1.0.3 > 1.0.2), ignoring any non-numeric suffix.
+    private func versionGreater(_ a: String, than b: String) -> Bool {
+        func nums(_ s: String) -> [Int] {
+            s.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
+        }
+        let x = nums(a), y = nums(b)
+        for i in 0..<max(x.count, y.count) {
+            let xi = i < x.count ? x[i] : 0
+            let yi = i < y.count ? y[i] : 0
+            if xi != yi { return xi > yi }
+        }
+        return false
     }
 
     private func syncNow() {
