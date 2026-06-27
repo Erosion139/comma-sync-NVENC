@@ -59,6 +59,17 @@ With rsync/ssh handled natively by the Go core, this becomes mostly packaging.
 Per-OS install docs, a GitHub Pages landing page, and CI that auto-attaches every
 platform's artifact to each GitHub Release.
 
+### Phase 5 — Releases, trust & auto-update
+- **SHA-256 checksums** published with every release so downloads can be verified.
+- **Signed + notarized macOS app** so it opens with no Gatekeeper warning — *pending
+  a decision on an Apple Developer account* (signing embeds the developer's name or
+  org into the app; weigh this against the project's anonymity before enabling).
+- **Built-in update check** — on launch the app checks GitHub Releases for a newer
+  version and offers to update. **On by default**, with a setting to turn it off, so
+  casual users don't get stuck on an old build. Only fetches the public Releases feed;
+  no telemetry, no personal data sent. (macOS: a lightweight Releases-API check, or
+  Sparkle once the app is signed; Tauri GUI: the built-in `tauri-plugin-updater`.)
+
 ## How CI helps contributors
 
 GitHub's hosted runners (`ubuntu-latest`, `macos-latest`, `windows-latest`) act as the
