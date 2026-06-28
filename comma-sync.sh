@@ -40,6 +40,10 @@ CHUNKS_DIR="${CHUNKS_DIR:-}"                     # where to keep raw chunks (emp
 FPS="${FPS:-20}"                               # openpilot cameras record at 20fps
 WITH_AUDIO="${WITH_AUDIO:-1}"                   # 1 = mux microphone audio (from qcamera.ts)
                                                #     into the video when it was recorded
+WITH_COMBINED="${WITH_COMBINED:-0}"            # 1 = also make one combined multi-angle video
+PRIMARY_CAM="${PRIMARY_CAM:-road}"             # combined-video roles, by label (road|wide|driver):
+SECONDARY_CAM="${SECONDARY_CAM:-wide}"         #   3 cams -> primary fills the top 2/3, secondary
+TERTIARY_CAM="${TERTIARY_CAM:-driver}"         #   bottom-left, tertiary bottom-right; 2 -> side by side
 SKIP_LATEST="${SKIP_LATEST:-1}"                # 1 = hold back a drive only if it's still
                                                #     being recorded; 0 = stitch everything now.
 MIN_AGE_SECS="${MIN_AGE_SECS:-120}"            # a drive whose newest chunk was written less
@@ -328,6 +332,47 @@ route_complete() {
 }
 
 # Stitch one drive's local chunks into MP4s. $2=1 enables collision-safe naming
+# combine_video <outdir> <stamp> <suffix>: build one optional multi-angle MP4 from
+# the per-camera MP4s just produced. 2 cameras -> side by side at native aspect; 3 ->
+# the primary across the top 2/3 with the secondary (bottom-left) and tertiary
+# (bottom-right) in the bottom third. Roles come from PRIMARY_CAM/SECONDARY_CAM/
+# TERTIARY_CAM (labels road|wide|driver); missing or duplicate roles are skipped, and
+# with fewer than 2 cameras nothing is made. Re-encodes (HW on macOS).
+combine_video() {
+  local outdir="$1" stamp="$2" suffix="$3"
+  local r rmp4 used="" roles=()
+  for r in "$PRIMARY_CAM" "$SECONDARY_CAM" "$TERTIARY_CAM"; do
+    case " $used " in *" $r "*) continue ;; esac          # skip a duplicate role
+    rmp4="$outdir/${stamp}__${r}${suffix}.mp4"
+    [ -f "$rmp4" ] && { roles+=("$rmp4"); used="$used $r"; }
+  done
+  local nc="${#roles[@]}"
+  [ "$nc" -ge 2 ] || return 0                             # 1 camera (or 0) -> nothing to combine
+
+  local cout="$outdir/${stamp}__combined${suffix}.mp4" fc rc=0
+  local venc=() inargs=()
+  if [ "$IS_MAC" = "1" ]; then venc=(-c:v h264_videotoolbox -b:v 14M)
+  else venc=(-c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p); fi
+  for rmp4 in "${roles[@]}"; do inargs+=(-i "$rmp4"); done
+
+  if [ "$nc" -eq 2 ]; then
+    fc="[0:v]scale=-2:1208[a];[1:v]scale=-2:1208[b];[a][b]hstack=inputs=2[v]"
+  else
+    fc="[0:v]scale=1920:1200:force_original_aspect_ratio=decrease,pad=1920:1200:(ow-iw)/2:(oh-ih)/2[p];"
+    fc+="[1:v]scale=960:600:force_original_aspect_ratio=decrease,pad=960:600:(ow-iw)/2:(oh-ih)/2[s];"
+    fc+="[2:v]scale=960:600:force_original_aspect_ratio=decrease,pad=960:600:(ow-iw)/2:(oh-ih)/2[t];"
+    fc+="color=c=black:s=1920x1800:r=${FPS}[bg];[bg][p]overlay=0:0[b1];[b1][s]overlay=0:1200[b2];[b2][t]overlay=960:1200:shortest=1[v]"
+  fi
+
+  ffmpeg -y -loglevel error "${inargs[@]}" -filter_complex "$fc" \
+    -map "[v]" -map "0:a?" "${venc[@]}" -c:a copy -movflags +faststart "$cout" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    echo "      combined (${nc} cams): $(basename "$cout")"
+  else
+    echo "      !! combined video failed for ${stamp}"
+  fi
+}
+
 # (append " (N)" so a re-sync into an existing folder never overwrites old files).
 # Returns 0 only if every camera stitched. Does NOT touch the ledger or chunks.
 stitch_route() {
@@ -450,6 +495,9 @@ stitch_route() {
     fi
     rm -f "$combined"
   done
+  if [ "$ok" = "1" ] && [ "$WITH_COMBINED" = "1" ]; then
+    combine_video "$outdir" "$stamp" "$suffix"
+  fi
   [ -n "$audio_pcm" ] && rm -f "$audio_pcm"
   [ "$ok" = "1" ]
 }
