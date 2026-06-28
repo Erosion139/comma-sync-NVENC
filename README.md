@@ -179,18 +179,12 @@ Fork the repo, work on a branch, and open a pull request.
 
 # Troubleshooting
 
-**The comma reboots every ~10 minutes during a transfer.** This is almost always
-**power**, not the transfer overloading the CPU. The comma 3X has a small internal
-battery; if its external supply can't fully power the device under load, it runs the
-deficit off the battery and browns out after ~10 minutes (then reboots and repeats).
-The script auto-resumes, but to stop the reboots:
+The comma reboots randomly during transfers still, but will pick back up where it left off and evetually get the video transferred. This is being troubleshot currenlty, but if you find a fix feel free to post a branch with a fix. As for now:
 
 - **Best:** transfer with the **engine running** (alternator → stable harness power), or
   power the device from a proper **high-current USB-C supply** (not a laptop port or a
   weak charger). Make sure the cable is fully seated.
 - **Mitigate:** lower the draw with `BWLIMIT`, e.g. `BWLIMIT=3m ./comma-sync.sh`.
-- It is **not** thermal — the comma shuts down near ~95 °C; under transfer it sits far
-  below that.
 
 # License
 
