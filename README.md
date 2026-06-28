@@ -145,7 +145,7 @@ Settings are environment variables:
 | `COMMA_IP` | _(empty)_ | Pin a fixed IP instead of auto-discovering |
 | `AUTO_DISCOVER` | `1` | `0` = only use `COMMA_IP` |
 | `REMOTE_PORT` | `22` | SSH port (older devices used `8022`) |
-| `SSH_KEY` | `~/.ssh/id_ed25519` | Private key to authenticate with |
+| `SSH_KEY` | `~/.ssh/id_[YOUR COMMA SSH ID]` | Private key to authenticate with |
 | `USE_USB` | `0` | `1` = transfer over USB/ADB instead of WiFi (see below) |
 | `BWLIMIT` | _(none)_ | Cap the transfer rate (e.g. `3m` = 3 MB/s). Lowers the comma's power draw — use if it reboots mid-transfer (see Troubleshooting) |
 
