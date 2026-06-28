@@ -400,6 +400,26 @@ stitch_route() {
   )
   if [ "${#cams[@]}" -eq 0 ]; then echo "   !! no camera footage downloaded for ${route} yet"; return 1; fi
 
+  # If the per-camera videos for this drive are already in the output folder, reuse
+  # them for the combined video instead of re-rendering everything (just builds the
+  # multi-angle file from the existing MP4s; no re-stitch of the individuals).
+  if [ "$WITH_COMBINED" = "1" ]; then
+    local have_all=1 _l _c
+    for _c in "${cams[@]}"; do
+      _l="$(label_for "$_c")"
+      [ -f "$ROOT/$stamp/${stamp}__${_l}.mp4" ] || { have_all=0; break; }
+    done
+    if [ "$have_all" = "1" ]; then
+      if [ -f "$ROOT/$stamp/${stamp}__combined.mp4" ]; then
+        echo "==> ${stamp}: individual + combined videos already exist — nothing to do"
+        return 0
+      fi
+      echo "==> ${stamp}: using the existing individual videos for the combined (no re-render)"
+      combine_video "$ROOT/$stamp" "$stamp" ""
+      return $?
+    fi
+  fi
+
   # Collision-safe suffix: lowest N (1 = none) where no camera output exists yet.
   local suffix="" cam lbl
   if [ "$collision" = "1" ]; then
