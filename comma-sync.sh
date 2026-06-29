@@ -76,6 +76,7 @@ cleanup() {
   [ -n "${EXCLUDES:-}" ] && rm -f "$EXCLUDES"
   [ -n "${DEVCOUNTS:-}" ] && rm -f "$DEVCOUNTS"
   [ "$USE_USB" = "1" ] && adb forward --remove "tcp:${USB_PORT}" >/dev/null 2>&1
+  [ -n "${CAFFEINATE_PID:-}" ] && kill "$CAFFEINATE_PID" >/dev/null 2>&1
   return 0
 }
 trap cleanup EXIT
@@ -100,8 +101,25 @@ mkdir -p "$ROOT" "$STAGING"
 mkdir -p "$(dirname "$IPCACHE")" 2>/dev/null || true
 touch "$LEDGER"
 
+# Sweep scratch left by a previously-interrupted stitch (a kill/crash mid-render skips
+# the inline cleanup and can strand a multi-GB temp that would otherwise wedge the next
+# run). Only touch our own "comma_*" entries older than a minute, so a concurrent run's
+# fresh scratch is never removed.
+find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'comma_*' -mmin +1 -exec rm -rf {} + 2>/dev/null || true
+
 # ---- portability shims (macOS vs Linux) -------------------------------------
 case "$(uname -s)" in Darwin) IS_MAC=1 ;; *) IS_MAC=0 ;; esac
+
+# Keep the Mac awake for the whole sync + stitch. A long drive (hours of footage)
+# takes a while to stitch; if the Mac idle-sleeps part way through, ffmpeg is killed
+# and leaves half-written, unplayable MP4s (no moov atom). `caffeinate -i -m -w $$`
+# holds an idle-sleep + disk-idle assertion that lasts until THIS script exits, then
+# releases on its own. Works on battery, not just AC. (cleanup() also kills it.)
+CAFFEINATE_PID=""
+if [ "$IS_MAC" = 1 ] && command -v caffeinate >/dev/null 2>&1; then
+  caffeinate -i -m -w $$ >/dev/null 2>&1 &
+  CAFFEINATE_PID=$!
+fi
 
 # epoch mtime of a file
 _mtime() { if [ "$IS_MAC" = 1 ]; then stat -f %m "$1"; else stat -c %Y "$1"; fi; }
@@ -109,6 +127,15 @@ _mtime() { if [ "$IS_MAC" = 1 ]; then stat -f %m "$1"; else stat -c %Y "$1"; fi;
 _size() { if [ "$IS_MAC" = 1 ]; then stat -f %z "$1"; else stat -c %s "$1"; fi; }
 # format an epoch with a strftime string (e.g. "+%Y-%m-%d_%H-%M-%S")
 _fmtdate() { if [ "$IS_MAC" = 1 ]; then date -r "$1" "$2"; else date -d "@$1" "$2"; fi; }
+# Is an MP4 actually finished/playable? A render that was interrupted (e.g. the Mac
+# slept mid-stitch) leaves a file with no moov atom and no readable duration. We only
+# trust / reuse an existing video if ffprobe reports a positive duration for it.
+mp4_ok() {
+  [ -f "$1" ] || return 1
+  local d
+  d="$(ffprobe -v error -show_entries format=duration -of default=nk=1:nw=1 "$1" 2>/dev/null | head -1)"
+  awk -v d="$d" 'BEGIN{ exit !(d+0 > 0) }'
+}
 # TCP connect probe (~1s). BSD nc uses -G for connect timeout; GNU/ncat don't.
 _ncz() {
   if [ "$IS_MAC" = 1 ]; then nc -z -G 1 -w 1 "$1" "$2" >/dev/null 2>&1
@@ -344,12 +371,13 @@ combine_video() {
   for r in "$PRIMARY_CAM" "$SECONDARY_CAM" "$TERTIARY_CAM"; do
     case " $used " in *" $r "*) continue ;; esac          # skip a duplicate role
     rmp4="$outdir/${stamp}__${r}${suffix}.mp4"
-    [ -f "$rmp4" ] && { roles+=("$rmp4"); used="$used $r"; }
+    mp4_ok "$rmp4" && { roles+=("$rmp4"); used="$used $r"; }
   done
   local nc="${#roles[@]}"
   [ "$nc" -ge 2 ] || return 0                             # 1 camera (or 0) -> nothing to combine
 
-  local cout="$outdir/${stamp}__combined${suffix}.mp4" fc rc=0
+  local cout="$outdir/${stamp}__combined${suffix}.mp4" ctmp fc rc=0
+  ctmp="${cout}.part"; rm -f "$ctmp"
   local venc=() inargs=()
   if [ "$IS_MAC" = "1" ]; then venc=(-c:v h264_videotoolbox -b:v 14M)
   else venc=(-c:v libx264 -preset veryfast -crf 22 -pix_fmt yuv420p); fi
@@ -365,10 +393,12 @@ combine_video() {
   fi
 
   ffmpeg -y -loglevel error "${inargs[@]}" -filter_complex "$fc" \
-    -map "[v]" -map "0:a?" "${venc[@]}" -c:a copy -movflags +faststart "$cout" || rc=$?
-  if [ "$rc" -eq 0 ]; then
+    -map "[v]" -map "0:a?" "${venc[@]}" -c:a copy -movflags +faststart -f mp4 "$ctmp" || rc=$?
+  if [ "$rc" -eq 0 ] && mp4_ok "$ctmp"; then
+    mv -f "$ctmp" "$cout"
     echo "      combined (${nc} cams): $(basename "$cout")"
   else
+    rm -f "$ctmp"
     echo "      !! combined video failed for ${stamp}"
   fi
 }
@@ -407,7 +437,7 @@ stitch_route() {
     local have_all=1 _l _c
     for _c in "${cams[@]}"; do
       _l="$(label_for "$_c")"
-      [ -f "$ROOT/$stamp/${stamp}__${_l}.mp4" ] || { have_all=0; break; }
+      mp4_ok "$ROOT/$stamp/${stamp}__${_l}.mp4" || { have_all=0; break; }
     done
     if [ "$have_all" = "1" ]; then
       if [ -f "$ROOT/$stamp/${stamp}__combined.mp4" ]; then
@@ -438,6 +468,14 @@ stitch_route() {
 
   echo "==> Stitching drive ${route}  ->  ${stamp}${suffix}"
 
+  # One scratch dir for this drive's big temp files (concatenated HEVC + audio PCM),
+  # with fixed names inside a UNIQUE dir. (BSD/macOS mktemp only randomizes a trailing
+  # run of X's, so "comma_XXXXXX.hevc" is NOT unique — it's a fixed name that an
+  # interrupted run can leave behind and block the next run. A unique dir avoids that,
+  # and one `rm -rf` cleans everything even if a camera fails.)
+  local tmpd
+  tmpd="$(mktemp -d "${TMPDIR:-/tmp}/comma_XXXXXX")"
+
   # Microphone audio, locked to the video segment-by-segment. The comma's mic starts
   # a few seconds AFTER the camera at the start of a drive (the first qcamera.ts has a
   # leading gap — e.g. audio doesn't begin until ~10s in), and segments can have small
@@ -449,8 +487,8 @@ stitch_route() {
   # mono. Segments with no audio get silence so they don't shift everything after them.
   local audio_pcm="" audio_dur=0 spcm rate=16000 segframes segdur tbytes cur had_audio=0
   if [ "$WITH_AUDIO" != "0" ]; then
-    audio_pcm="$(mktemp "${TMPDIR:-/tmp}/comma_aud_XXXXXX.pcm")"
-    spcm="$(mktemp "${TMPDIR:-/tmp}/comma_seg_XXXXXX.pcm")"
+    audio_pcm="$tmpd/aud.pcm"; : > "$audio_pcm"
+    spcm="$tmpd/seg.pcm"
     for s in "${segs[@]}"; do
       # This segment's video length, from its frame count (any camera — they're synced).
       segframes=""
@@ -486,11 +524,16 @@ stitch_route() {
     fi
   fi
 
-  local ok=1 out combined rc atag frames vdur tempo
+  local ok=1 out vout combined rc atag frames vdur tempo
   for cam in "${cams[@]}"; do
     lbl="$(label_for "$cam")"
     out="$outdir/${stamp}__${lbl}${suffix}.mp4"
-    combined="$(mktemp "${TMPDIR:-/tmp}/comma_XXXXXX.hevc")"
+    # Render to a temp file and only move it into place on success, so an interrupted
+    # render (Mac sleep, kill, disk full) never leaves an unplayable file at the real
+    # path that later runs would mistake for a finished video.
+    vout="${out}.part"
+    rm -f "$vout"
+    combined="$tmpd/vid.hevc"; rm -f "$combined"
     for s in "${segs[@]}"; do
       [ -f "$STAGING/$s/$cam" ] && cat "$STAGING/$s/$cam" >> "$combined"
     done
@@ -502,15 +545,17 @@ stitch_route() {
       vdur="$(awk -v f="${frames:-0}" -v r="$FPS" 'BEGIN{ if(r>0 && f>0) printf "%.4f", f/r; else print 0 }')"
       tempo="$(awk -v a="$audio_dur" -v v="$vdur" 'BEGIN{ if(v>0){t=a/v; if(t<0.5)t=0.5; if(t>2.0)t=2.0; printf "%.6f",t} else print 1 }')"
       ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" -f s16le -ar 16000 -ac 1 -i "$audio_pcm" \
-        -map 0:v:0 -map 1:a:0 -c:v copy -filter:a "atempo=${tempo}" -c:a aac -b:a 96k -tag:v hvc1 "$out" || rc=$?
+        -map 0:v:0 -map 1:a:0 -c:v copy -filter:a "atempo=${tempo}" -c:a aac -b:a 96k -tag:v hvc1 -f mp4 "$vout" || rc=$?
     else
       ffmpeg -y -loglevel error -framerate "$FPS" -i "$combined" \
-        -c copy -tag:v hvc1 "$out" || rc=$?
+        -c copy -tag:v hvc1 -f mp4 "$vout" || rc=$?
     fi
-    if [ "$rc" -eq 0 ]; then
+    if [ "$rc" -eq 0 ] && mp4_ok "$vout"; then
+      mv -f "$vout" "$out"
       [ -n "$audio_pcm" ] && atag=" +audio" || atag=""
       echo "      ${lbl}${atag}: $(basename "$out")"
     else
+      rm -f "$vout"
       echo "      !! ffmpeg failed for ${lbl} on ${route}"; ok=0
     fi
     rm -f "$combined"
@@ -518,7 +563,7 @@ stitch_route() {
   if [ "$ok" = "1" ] && [ "$WITH_COMBINED" = "1" ]; then
     combine_video "$outdir" "$stamp" "$suffix"
   fi
-  [ -n "$audio_pcm" ] && rm -f "$audio_pcm"
+  rm -rf "$tmpd"
   [ "$ok" = "1" ]
 }
 

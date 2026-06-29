@@ -10,7 +10,7 @@ ROOT="$(cd "$DIR/.." && pwd)"
 APP="$ROOT/Comma Sync.app"
 # App version (used for the in-app "update available" check). Override per build:
 #   APP_VERSION=1.0.1 bash macos-app/build.sh
-APP_VERSION="${APP_VERSION:-1.0.4}"
+APP_VERSION="${APP_VERSION:-1.0.5}"
 
 echo "==> Compiling App.swift"
 swiftc -parse-as-library -O "$DIR/App.swift" -o "$DIR/CommaSync" \
