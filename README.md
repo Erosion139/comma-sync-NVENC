@@ -38,6 +38,10 @@ SSH, `scp`, and manual `ffmpeg` work. Comma Sync does it all for you:
 > Tested on a **comma 3X** running [sunnypilot](https://github.com/sunnypilot/sunnypilot).
 > Should also work with stock openpilot and other forks that keep the standard layout.
 
+> 🐧🪟 **On Linux or Windows?** There's now a cross-platform **beta** app (the new shared
+> "Go core") that runs on Linux, Windows, **and** macOS. Jump to
+> **[Linux and Windows (beta)](#linux-and-windows-beta)** below to try it.
+
 ---
 
 # Install on macOS (step by step)
@@ -113,6 +117,79 @@ The comma only allows computers whose SSH key is on a GitHub account you tell it
 
 ---
 
+# Linux and Windows (beta)
+
+> 🧪 **Testers wanted!** There's now a **Linux and Windows** build of Comma Sync (plus a
+> macOS build), all powered by a new shared **Go core**. It does everything the macOS app
+> does — discovering the comma, downloading drives, and stitching videos — but with SSH,
+> file transfer, and discovery built **natively into the app** (so there's nothing to set
+> up except `ffmpeg`). It's a **beta**, so please try it and
+> **[report any bugs](https://github.com/sourylime/comma-sync/issues)**. Eventually the
+> whole project will move onto this one core; for now it lives **alongside** the stable
+> macOS app so Linux and Windows users have something to run today.
+
+### Step 1 — Download it
+
+Open the **[Releases page](https://github.com/sourylime/comma-sync/releases)** and find the
+newest entry titled **"Comma Sync … — Go core beta (all platforms)"** — it has a grey
+**`Pre-release`** label. Click it, scroll to **Assets**, and download the file for your
+system:
+
+| Your computer | Download this |
+|---------------|---------------|
+| **Linux** | `Comma.Sync_*_amd64.AppImage` (simplest) — or `.deb` / `.rpm` |
+| **Windows** | `Comma.Sync_*_x64-setup.exe` (installer) — or `.msi` |
+| **macOS** | `Comma-Sync-Go-macOS.zip` |
+
+*(Each OS also has a `SHA256SUMS-*.txt` if you want to verify your download.)*
+
+### Step 2 — Install `ffmpeg` (one time)
+
+The app uses `ffmpeg`/`ffprobe` to stitch the videos — it's the only thing you need to
+install yourself. Open a terminal and run the line for your OS:
+
+- **Linux:** `sudo apt install ffmpeg` (Debian/Ubuntu) · `sudo dnf install ffmpeg` (Fedora)
+- **Windows:** `winget install Gyan.FFmpeg`, then **close and reopen** your terminal so it's found
+- **macOS:** `brew install ffmpeg`
+
+### Step 3 — Open the app
+
+**Linux** — using the AppImage, make it runnable and launch it:
+```bash
+chmod +x Comma.Sync_*_amd64.AppImage
+./Comma.Sync_*_amd64.AppImage
+# — or install the .deb:   sudo apt install ./Comma.Sync_*_amd64.deb
+# — or the .rpm (Fedora):  sudo dnf install ./Comma.Sync-*.x86_64.rpm
+```
+
+**Windows** — run the `*-setup.exe` (or the `.msi`). It isn't code-signed yet, so Windows
+**SmartScreen** may pop up a warning — click **More info → Run anyway**.
+
+**macOS** — unzip to get **`Comma Sync Go.app`**. It's unsigned, so the first time
+**right-click the app → Open**, then click **Open** in the dialog (after that, double-click
+as normal).
+
+### Step 4 — Let the app talk to the comma (one time)
+
+This is the **same** one-time setup as the macOS app: the comma only allows computers whose
+SSH key is registered to it via a GitHub account. Follow **Step 4** in the macOS
+instructions above — it's identical on every OS, except how you make the key:
+
+- **Linux / macOS:** `ssh-keygen -t ed25519` (key lands in `~/.ssh/id_ed25519.pub`)
+- **Windows:** `ssh-keygen -t ed25519` in **PowerShell** (built into Windows 10/11); your
+  key lands in `%USERPROFILE%\.ssh\id_ed25519.pub`
+
+Add the `.pub` key to a GitHub account, then enter **that GitHub username** on the comma
+under **Settings → Developer → SSH**.
+
+### Step 5 — Use it
+
+Make sure the comma is on the **same WiFi**, open the app, pick where to save videos, click
+**Index Drives**, tick what you want (or **Download All**), and let it transfer + stitch.
+Same as the macOS app. **Hit a bug? [Open an issue](https://github.com/sourylime/comma-sync/issues)** — that's exactly what this beta is for.
+
+---
+
 # Command line — macOS & Linux
 
 The core is a single script that **auto-detects macOS or Linux** (no flags needed):
@@ -131,8 +208,9 @@ sudo apt install rsync ffmpeg openssh-client netcat-openbsd   # Debian/Ubuntu
 ./comma-sync.sh
 ```
 
-**Windows:** run it inside **WSL** or **Git Bash** with those same tools installed.
-(A native Windows experience is on the roadmap — see Contributing.)
+**Windows:** this script needs **WSL** or **Git Bash** with those same tools. For a
+native Windows experience, use the **[Linux and Windows (beta)](#linux-and-windows-beta)**
+app instead — no WSL required.
 
 Settings are environment variables:
 
@@ -161,21 +239,22 @@ No WiFi where you park? You can transfer over a USB-C cable using the comma's AD
 > ~5 MB/s — measured *slower* than the device's WiFi (~6 MB/s). Use USB only when WiFi
 > isn't available.
 
-# Contributing & other operating systems
+# Contributing & status
 
-PRs and forks welcome! Current status:
+PRs and forks welcome! Where things stand:
 
-- **CLI:** runs natively on **macOS and Linux** (auto-detects).
-- **GUI:** macOS only (SwiftUI).
+- **macOS:** native **SwiftUI app** (stable) plus the `comma-sync.sh` CLI.
+- **Linux & Windows:** native app in **[beta](#linux-and-windows-beta)** via the shared
+  **Go core** — this is where testing and bug reports help most right now.
+- **CLI:** `comma-sync.sh` runs natively on macOS and Linux.
 
-High-value contribution opportunities:
+The project is mid-migration to a single cross-platform **Go core**: once the Linux and
+Windows builds are verified on real hardware, it'll become the one engine behind every
+front-end, and these instructions will be consolidated. Until then the stable macOS app
+and the beta live side by side.
 
-- **A native Windows path** — today Windows needs WSL/Git Bash. A self-contained core
-  (e.g. a small Go binary that calls `ffmpeg`/`rsync`/`ssh`) would remove that.
-- **A Linux or Windows GUI** — ideally one cross-platform front-end (Tauri, Flutter, or
-  Qt) that calls the same script/core and mirrors the macOS app's screens.
-
-Fork the repo, work on a branch, and open a pull request.
+Found a bug or want to help? **[Open an issue](https://github.com/sourylime/comma-sync/issues)**,
+or fork the repo, work on a branch, and open a pull request.
 
 # Troubleshooting
 
