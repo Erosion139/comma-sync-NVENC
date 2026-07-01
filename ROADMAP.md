@@ -17,26 +17,27 @@ cross-platform tool: one shared engine, with native front-ends per OS.
                           (Tauri / Flutter / Qt)
 ```
 
-Today the engine is a portable **bash** script. The plan is to grow a single
-self-contained **core binary** (Go) that every front-end calls, so we never
-re-implement discovery, the ledger, stitching, or audio muxing per platform.
+The engine is now a single self-contained **core binary** (Go) that every front-end
+calls, so we never re-implement discovery, the ledger, stitching, or audio muxing per
+platform. The original bash script (`comma-sync.sh`) is **retired** but kept in the repo
+for anyone who still wants it.
 
 ## Status
 
 | Piece | State |
 |-------|-------|
-| CLI on **macOS** | ✅ Done |
-| CLI on **Linux** (auto-detects OS) | ✅ Done |
-| **macOS app** (SwiftUI) | ✅ Done |
-| **CI** (GitHub Actions: Linux lint + macOS build) | ✅ Done |
-| **Go core** (single binary, JSON output, native SSH/SFTP) | ⏭️ Next |
-| **Linux GUI** | 🔜 Planned |
-| **Windows** (native core + GUI) | 🔜 Planned |
+| **Go core** (single binary, JSON output, native SSH/SFTP) | ✅ Done |
+| **macOS app** (SwiftUI on the core) | ✅ Done |
+| **Linux & Windows app** (Tauri on the core) | ✅ Done |
+| **CI** (GitHub Actions: core + macOS + Tauri, all platforms) | ✅ Done |
+| **SHA-256 checksums + built-in update check** | ✅ Done |
+| Legacy `comma-sync.sh` CLI (macOS/Linux) | ✅ Done (retired) |
+| Signed + notarized macOS app | 🔜 Pending an Apple Developer account decision |
 | **GitHub Pages** site | 🔜 Planned |
 
 ## Phases
 
-### Phase 1 — Go core (next)
+### Phase 1 — Go core ✅ Shipped
 Re-implement the script's logic as a single cross-compiled binary:
 - Subcommands with JSON output (`discover`, `list --json`, `sync`), emitting
   **structured progress events** so GUIs don't parse text.
@@ -46,12 +47,12 @@ Re-implement the script's logic as a single cross-compiled binary:
   `qcamera.ts`, collision-safe naming, USB/ADB fallback.
 - CI builds it for Ubuntu / macOS / Windows on every push.
 
-### Phase 2 — Cross-platform GUI
+### Phase 2 — Cross-platform GUI ✅ Shipped
 One front-end (Tauri preferred — tiny native binaries) that calls the core and
 mirrors the macOS app's screens (main, indexing results with per-drive progress,
 stop). Ships Linux `.AppImage`/`.deb` first.
 
-### Phase 3 — Windows
+### Phase 3 — Windows ✅ Shipped
 Package the GUI for Windows (`.msi`/`.exe`) and bundle a known-good `ffmpeg.exe`.
 With rsync/ssh handled natively by the Go core, this becomes mostly packaging.
 

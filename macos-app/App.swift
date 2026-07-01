@@ -43,12 +43,12 @@ final class SyncRunner: ObservableObject {
     private var cfg: (out: String, chunks: String, del: Bool, audio: Bool, limit: Bool, script: String)?
 
     func startSync(output: String, chunks: String, autoDelete: Bool, syncAudio: Bool, limitPower: Bool, script: String) {
-        begin(jobs: [Job(route: nil, args: [])], routes: [],
+        begin(jobs: [Job(route: nil, args: ["sync"])], routes: [],
               output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, limitPower: limitPower, script: script)
     }
     func startBatch(routes: [String], output: String, chunks: String, autoDelete: Bool,
                     syncAudio: Bool, limitPower: Bool, script: String) {
-        begin(jobs: routes.map { Job(route: $0, args: ["--restitch", $0]) }, routes: routes,
+        begin(jobs: routes.map { Job(route: $0, args: ["restitch", $0]) }, routes: routes,
               output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, limitPower: limitPower, script: script)
     }
 
@@ -56,7 +56,7 @@ final class SyncRunner: ObservableObject {
                        autoDelete: Bool, syncAudio: Bool, limitPower: Bool, script: String) {
         guard !isRunning, !jobs.isEmpty else { return }
         guard FileManager.default.fileExists(atPath: script) else {
-            log = "ERROR: comma-sync.sh not found at:\n\(script)\n"; return
+            log = "ERROR: the comma-sync core wasn't found at:\n\(script)\n"; return
         }
         pending = jobs
         cfg = (output, chunks, autoDelete, syncAudio, limitPower, script)
@@ -86,8 +86,8 @@ final class SyncRunner: ObservableObject {
         statusLine = ""
 
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [cfg.script] + job.args
+        p.executableURL = URL(fileURLWithPath: cfg.script)   // the bundled Go core binary
+        p.arguments = job.args + ["--json"]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["ROOT"] = cfg.out
@@ -128,37 +128,34 @@ final class SyncRunner: ObservableObject {
     }
 
     private func handle(_ chunk: String) {
-        for raw in chunk.split(whereSeparator: { $0 == "\r" || $0 == "\n" }) {
-            let line = String(raw)
-            if let (pct, status) = SyncRunner.parseProgress(line) {
-                progress = pct; statusLine = status
-            } else {
-                let t = line.trimmingCharacters(in: .whitespaces)
-                if t.isEmpty { continue }
+        for raw in chunk.split(whereSeparator: { $0 == "\n" }) {
+            let line = String(raw).trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            // The core emits one JSON event per line on stdout; stderr (discovery
+            // notes, etc.) is plain text and just goes to the log.
+            guard let data = line.data(using: .utf8),
+                  let ev = try? JSONDecoder().decode(CoreEvent.self, from: data) else {
                 log += line + "\n"
-                if t.contains("Stitching") { progress = nil; statusLine = "Stitching video…" }
-                else if t.contains("Scanning") { progress = nil; statusLine = "Finding the comma…" }
-                else if t.contains("downloading") || t.contains("Syncing new footage")
-                        || t.contains("incremental file list") {
-                    // rsync builds the full file list before any bytes move; with a
-                    // big drive this looks like it's "starting over". Make clear it's
-                    // just checking, not re-downloading.
+                continue
+            }
+            switch ev.type {
+            case "progress":
+                if ev.phase == "stitch" {
                     progress = nil
-                    statusLine = "Scanning the comma — skipping files you already have…"
+                    statusLine = "Stitching video…"
+                } else {
+                    progress = (ev.percent ?? 0) / 100.0
+                    statusLine = "Downloading" + (ev.route.map { " · \($0)" } ?? "")
                 }
+            case "drive", "log", "done":
+                progress = nil
+                if let m = ev.message, !m.isEmpty { log += m + "\n" }
+            case "error":
+                if let m = ev.message { log += "!! " + m + "\n" }
+            default:
+                break
             }
         }
-    }
-
-    static func parseProgress(_ line: String) -> (Double, String)? {
-        let pattern = #"[\d,]+\s+(\d{1,3})%\s+(\S+)\s+(\d+:\d{2}:\d{2})"#
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let ns = line as NSString
-        guard let m = re.firstMatch(in: line, range: NSRange(location: 0, length: ns.length)) else { return nil }
-        let pct = Double(ns.substring(with: m.range(at: 1))) ?? 0
-        let rate = ns.substring(with: m.range(at: 2))
-        let eta = ns.substring(with: m.range(at: 3))
-        return (pct / 100.0, "\(rate) · \(eta) left")
     }
 
     func cancel() {
@@ -172,10 +169,19 @@ final class SyncRunner: ObservableObject {
     }
 }
 
+// One JSON event line from the Go core's --json stream.
+struct CoreEvent: Decodable {
+    let type: String
+    let route: String?
+    let phase: String?
+    let percent: Double?
+    let message: String?
+}
+
 struct Drive: Identifiable, Codable {
     let route: String
     let stamp: String
-    let cameras: String
+    let cameras: [String]   // core --json emits an array (road/wide/driver)
     let hasAudio: Bool?
     let sizeKB: Int
     let segments: Int
@@ -187,7 +193,7 @@ struct Drive: Identifiable, Codable {
         return mb >= 1024 ? String(format: "%.1f GB", mb / 1024) : String(format: "%.0f MB", mb)
     }
     var subtitle: String {
-        var parts = [cameras.replacingOccurrences(of: ",", with: ", ")]
+        var parts = [cameras.joined(separator: ", ")]
         if let a = hasAudio { parts.append(a ? "audio" : "no audio") }
         parts.append(sizeText)
         parts.append("\(segments) min")
@@ -213,11 +219,11 @@ struct ContentView: View {
     @State private var updateVersion: String? = nil
     @State private var updateURL = ""
 
+    // The bundled Go core binary (Resources/comma-sync). COMMA_SYNC_BIN overrides
+    // it for development.
     private var scriptPath: String {
-        let appDir = (Bundle.main.bundlePath as NSString).deletingLastPathComponent
-        let sibling = appDir + "/comma-sync.sh"
-        if FileManager.default.fileExists(atPath: sibling) { return sibling }
-        return Bundle.main.path(forResource: "comma-sync", ofType: "sh") ?? sibling
+        if let p = ProcessInfo.processInfo.environment["COMMA_SYNC_BIN"], !p.isEmpty { return p }
+        return Bundle.main.bundlePath + "/Contents/Resources/comma-sync"
     }
 
     var body: some View {
@@ -248,6 +254,10 @@ struct ContentView: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                 }
             }
+
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color.orange.opacity(0.12)))
 
             GroupBox {
                 VStack(spacing: 12) {
@@ -330,7 +340,7 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 700)
+        .frame(width: 580, height: 884)
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }
@@ -390,22 +400,8 @@ struct ContentView: View {
             .padding(8)
             .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
             .overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
-            .frame(maxHeight: .infinity)
+            .frame(minHeight: 240, maxHeight: .infinity)
             .onChange(of: runner.log) { _, _ in withAnimation { sp.scrollTo("END", anchor: .bottom) } }
-        }
-    }
-
-    @ViewBuilder
-    private func folderRow(title: String, systemImage: String, path: Binding<String>) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 20)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.callout).bold()
-                Text(path.wrappedValue.isEmpty ? "Not set" : path.wrappedValue)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-            }
-            Spacer()
-            Button("Choose…") { choose(path) }
         }
     }
 
@@ -420,6 +416,19 @@ struct ContentView: View {
             }
             .labelsHidden()
             .frame(width: 110)
+        }
+    }
+
+    private func folderRow(title: String, systemImage: String, path: Binding<String>) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage).foregroundStyle(.secondary).frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title).font(.callout).bold()
+                Text(path.wrappedValue.isEmpty ? "Not set" : path.wrappedValue)
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+            }
+            Spacer()
+            Button("Choose…") { choose(path) }
         }
     }
 
@@ -447,40 +456,33 @@ struct ContentView: View {
         (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "0"
     }
 
-    // Ask GitHub for the latest *stable* release (the API skips pre-releases, so the
-    // Linux/Windows GUI beta never shows up here). If it's newer than this build,
-    // surface the banner. Read-only, sends nothing about the user.
+    // Ask the bundled core whether a newer release is out — it checks the stable
+    // GitHub releases (the latest official build). Read-only; sends no user data.
     private func checkForUpdate() {
         guard autoUpdateCheck else { return }
-        guard let url = URL(string: "https://api.github.com/repos/sourylime/comma-sync/releases/latest") else { return }
-        var req = URLRequest(url: url, timeoutInterval: 8)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-        URLSession.shared.dataTask(with: req) { data, _, _ in
-            guard let data,
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let tag = obj["tag_name"] as? String,
-                  let html = obj["html_url"] as? String else { return }
-            let remote = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-            guard versionGreater(remote, than: appVersion) else { return }
+        let core = scriptPath
+        let version = appVersion
+        DispatchQueue.global().async {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: core)
+            p.arguments = ["update-check", "--current", version, "--json"]
+            var env = ProcessInfo.processInfo.environment
+            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+            p.environment = env
+            let out = Pipe()
+            p.standardOutput = out
+            p.standardError = Pipe()
+            do { try p.run() } catch { return }
+            let data = out.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            struct U: Decodable { let updateAvailable: Bool; let tag: String?; let url: String? }
+            guard let u = try? JSONDecoder().decode(U.self, from: data),
+                  u.updateAvailable, let tag = u.tag, let url = u.url else { return }
             DispatchQueue.main.async {
                 updateVersion = tag
-                updateURL = html
+                updateURL = url
             }
-        }.resume()
-    }
-
-    // Compare dotted numeric versions (1.0.3 > 1.0.2), ignoring any non-numeric suffix.
-    private func versionGreater(_ a: String, than b: String) -> Bool {
-        func nums(_ s: String) -> [Int] {
-            s.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
         }
-        let x = nums(a), y = nums(b)
-        for i in 0..<max(x.count, y.count) {
-            let xi = i < x.count ? x[i] : 0
-            let yi = i < y.count ? y[i] : 0
-            if xi != yi { return xi > yi }
-        }
-        return false
     }
 
     private func syncNow() {
@@ -533,8 +535,8 @@ struct ContentView: View {
 
     private func loadDrives() -> [Drive] {
         let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/bin/bash")
-        p.arguments = [scriptPath, "--list"]
+        p.executableURL = URL(fileURLWithPath: scriptPath)   // the Go core
+        p.arguments = ["list", "--json"]
         var env = ProcessInfo.processInfo.environment
         env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
         env["ROOT"] = outputDir
@@ -546,15 +548,7 @@ struct ContentView: View {
         do { try p.run() } catch { return [] }
         let data = out.fileHandleForReading.readDataToEndOfFile()
         p.waitUntilExit()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        var result: [Drive] = []
-        for line in text.split(separator: "\n") {
-            let c = line.components(separatedBy: "\t")
-            guard c.count >= 7 else { continue }
-            let audio: Bool? = (c[3] == "1") ? true : (c[3] == "0" ? false : nil)
-            result.append(Drive(route: c[0], stamp: c[1], cameras: c[2], hasAudio: audio,
-                                 sizeKB: Int(c[4]) ?? 0, segments: Int(c[5]) ?? 0, location: c[6]))
-        }
+        let result = (try? JSONDecoder().decode([Drive].self, from: data)) ?? []
         return result.sorted { $0.stamp > $1.stamp }
     }
 }
@@ -632,6 +626,9 @@ struct DrivesSheet: View {
                 } else {
                     HStack(spacing: 10) {
                         Spacer()
+                        Button("Restitch Selected") { onBatch(Array(selection)) }
+                            .disabled(selection.isEmpty)
+                            .help("Re-render the selected drives from footage already downloaded — e.g. to apply a new multi-angle layout. Skips any that are already rendered with the current settings.")
                         Button("Download Selected") { onBatch(Array(selection)) }
                             .disabled(selection.isEmpty)
                         Button("Download All") { onBatch(drives.map { $0.route }) }
@@ -690,21 +687,36 @@ struct DrivesSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-        } else if runner.doneRoutes.contains(d.route) {
-            Label("Synced", systemImage: "checkmark.circle.fill")
-                .font(.caption).foregroundStyle(.green).labelStyle(.titleAndIcon)
-        } else if runner.failedRoutes.contains(d.route) {
-            Label("Failed", systemImage: "exclamationmark.triangle.fill")
-                .font(.caption).foregroundStyle(.orange)
-        } else if runner.isRunning && runner.batchRoutes.contains(d.route) {
-            Text("Queued").font(.caption).foregroundStyle(.secondary)
+        } else if runner.isRunning {
+            // A batch is running and this isn't the drive being processed right now.
+            if runner.doneRoutes.contains(d.route) {
+                Label("Synced", systemImage: "checkmark.circle.fill")
+                    .font(.caption).foregroundStyle(.green).labelStyle(.titleAndIcon)
+            } else if runner.failedRoutes.contains(d.route) {
+                Label("Failed", systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption).foregroundStyle(.orange)
+            } else if runner.batchRoutes.contains(d.route) {
+                Text("Queued").font(.caption).foregroundStyle(.secondary)
+            }
         } else {
+            // Idle: show a glyph for what happened this session, and ALWAYS offer the
+            // action button — a synced (green) drive can still be re-stitched, e.g. to
+            // apply a new multi-angle layout. (Before, the "Synced" label replaced the
+            // button, so synced drives couldn't be re-stitched even after reloading.)
             HStack(spacing: 10) {
-                Text(d.onDevice ? "on comma" : "on Mac")
-                    .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
-                    .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
-                if !runner.isRunning {
-                    Button(d.onDevice ? "Download" : "Re-stitch") { onBatch([d.route]) }
+                if runner.doneRoutes.contains(d.route) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                        .help("Synced this session")
+                } else if runner.failedRoutes.contains(d.route) {
+                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        .help("Last attempt failed")
+                } else {
+                    Text(d.onDevice ? "on comma" : "on Mac")
+                        .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
+                }
+                Button((runner.doneRoutes.contains(d.route) || !d.onDevice) ? "Re-stitch" : "Download") {
+                    onBatch([d.route])
                 }
             }
         }

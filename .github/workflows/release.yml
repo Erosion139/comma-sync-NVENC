@@ -1,0 +1,112 @@
+name: Release
+
+# Push a tag to build and publish the cross-platform release (macOS + Linux + Windows,
+# all on the shared Go core):
+#   v1.2.3             -> stable release, marked "Latest"
+#   gui-v1.2.3-beta.1  -> pre-release (beta channel; never marked "Latest")
+on:
+  push:
+    tags:
+      - 'v*'
+      - 'gui-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  installers:
+    name: Build & publish installers (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Linux system deps (webkit2gtk etc.)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev \
+            librsvg2-dev patchelf libayatana-appindicator3-dev
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: gui/src-tauri
+      - name: Build the Go core as a Tauri sidecar
+        shell: bash
+        working-directory: core
+        run: |
+          triple="$(rustc -vV | sed -n 's/^host: //p')"
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          mkdir -p ../gui/src-tauri/binaries
+          go build -trimpath -ldflags "-s -w" \
+            -o "../gui/src-tauri/binaries/comma-sync-${triple}${ext}" .
+      - name: Build installers and publish the release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: gui/src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: "Comma Sync ${{ github.ref_name }}"
+          releaseBody: |
+            **Comma Sync** — pull dashcam footage off your comma and stitch each drive
+            into playable videos (with audio), all on the shared **Go core**. Native
+            SSH/SFTP + device discovery are built in; the only thing you install is
+            `ffmpeg`.
+
+            **Downloads**
+            - **macOS:** `Comma-Sync-macOS.zip` (right‑click → Open on first launch).
+            - **Linux:** `.AppImage` (`chmod +x` then run), `.deb`, or `.rpm`.
+            - **Windows:** the `.msi` or `*-setup.exe` (SmartScreen → More info → Run anyway).
+
+            **Requirement:** `ffmpeg`/`ffprobe` on your PATH
+            (`brew install ffmpeg` / `sudo apt install ffmpeg` / `winget install Gyan.FFmpeg`).
+            **SHA‑256 checksums** are attached for every file.
+
+            Found a bug? [Open an issue](https://github.com/sourylime/comma-sync/issues).
+          prerelease: ${{ startsWith(github.ref_name, 'gui-v') }}
+          releaseDraft: false
+      - name: Publish SHA-256 checksums
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          out="$RUNNER_TEMP/SHA256SUMS-${{ runner.os }}.txt"
+          : > "$out"
+          find gui/src-tauri/target/release/bundle -type f \
+            \( -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+               -o -name '*.msi' -o -name '*setup.exe' \) -print0 |
+            while IFS= read -r -d '' f; do
+              ( cd "$(dirname "$f")" && sha256sum "$(basename "$f")" )
+            done >> "$out"
+          cat "$out"
+          gh release upload "${{ github.ref_name }}" "$out" --clobber -R "${{ github.repository }}"
+
+  macos-app:
+    name: Build macOS app
+    needs: installers          # the installers job creates the GitHub release first
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build the SwiftUI app on the Go core
+        run: |
+          v="${GITHUB_REF_NAME#gui-v}"; v="${v#v}"; v="${v%%-*}"   # v1.1.0 / gui-v1.1.0-beta.1 -> 1.1.0
+          APP_VERSION="$v" bash macos-app/build.sh
+      - name: Package + checksum + upload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent "Comma Sync.app" Comma-Sync-macOS.zip
+          shasum -a 256 Comma-Sync-macOS.zip > SHA256SUMS-macOS.txt
+          cat SHA256SUMS-macOS.txt
+          gh release upload "$GITHUB_REF_NAME" Comma-Sync-macOS.zip SHA256SUMS-macOS.txt \
+            --clobber -R "${{ github.repository }}"

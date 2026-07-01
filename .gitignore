@@ -1,7 +1,20 @@
-# Build output
+# Build output — macOS app (SwiftUI on the Go core)
 Comma Sync.app/
 macos-app/CommaSync
+macos-app/comma-sync
+macos-app/core-arm64
+macos-app/core-amd64
+macos-app/icon.iconset/
+macos-app/icon.icns
 *.dSYM/
+
+# Go core build output
+core/comma-sync
+
+# Tauri (Linux/Windows GUI) build output
+gui/src-tauri/target/
+gui/src-tauri/gen/
+gui/src-tauri/binaries/
 
 # Your footage and synced data — never commit
 Comma Footage/
@@ -14,7 +27,4 @@ Raw HEVC Chunks/
 
 # macOS cruft
 .DS_Store
-
-# Generated icon artifacts
-macos-app/icon.iconset/
-macos-app/icon.icns
+core/core

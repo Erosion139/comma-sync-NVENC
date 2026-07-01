@@ -1,16 +1,23 @@
 #!/usr/bin/env bash
 #
-# Build "Comma Sync.app" from App.swift.
-# Requires macOS with the Xcode command line tools (`xcode-select --install`).
+# Build "Comma Sync.app" — the SwiftUI macOS UI wired to the bundled Go core.
+# This is THE macOS build of Comma Sync. (The legacy comma-sync.sh engine is retired
+# but kept in the repo for anyone who still wants it.) Requires macOS + Xcode CLT + Go.
 #
 set -euo pipefail
 
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
+CORE="$ROOT/core"
 APP="$ROOT/Comma Sync.app"
-# App version (used for the in-app "update available" check). Override per build:
-#   APP_VERSION=1.0.1 bash macos-app/build.sh
-APP_VERSION="${APP_VERSION:-1.0.6}"
+APP_VERSION="${APP_VERSION:-1.1.0}"
+
+echo "==> Building universal Go core (arm64 + x86_64)"
+( cd "$CORE"
+  GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o "$DIR/core-arm64" .
+  GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o "$DIR/core-amd64" . )
+lipo -create -output "$DIR/comma-sync" "$DIR/core-arm64" "$DIR/core-amd64"
+rm -f "$DIR/core-arm64" "$DIR/core-amd64"
 
 echo "==> Compiling App.swift"
 swiftc -parse-as-library -O "$DIR/App.swift" -o "$DIR/CommaSync" \
@@ -28,9 +35,9 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mv "$DIR/CommaSync" "$APP/Contents/MacOS/CommaSync"
-cp "$ROOT/comma-sync.sh" "$APP/Contents/Resources/comma-sync.sh"
+mv "$DIR/comma-sync" "$APP/Contents/Resources/comma-sync"
+chmod +x "$APP/Contents/Resources/comma-sync"
 cp "$DIR/icon.icns" "$APP/Contents/Resources/icon.icns"
-chmod +x "$APP/Contents/Resources/comma-sync.sh"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -52,8 +59,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-# Ad-hoc sign so Gatekeeper allows it to launch locally.
+# Ad-hoc sign (covers the bundled core too) so Gatekeeper allows it to launch.
 codesign --force --deep -s - "$APP" 2>/dev/null || true
 
 echo "==> Done. Built: $APP"
-echo "    Keep it next to comma-sync.sh (it runs the sibling script)."
+echo "    Needs ffmpeg/ffprobe on PATH (brew install ffmpeg)."
