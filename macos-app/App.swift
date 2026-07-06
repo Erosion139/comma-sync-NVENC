@@ -292,15 +292,15 @@ struct ContentView: View {
             Toggle(isOn: $withCombined) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Also make a combined multi-angle video")
-                    Text("One extra file with all cameras — 2 side by side, or 3 with the main angle on top and the other two below")
+                    Text("One extra file — 2 angles side by side, or 3 with the primary on top and the other two below. Set Tertiary to None to combine just two even when a third camera exists.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
             if withCombined {
                 HStack(spacing: 16) {
-                    camPicker("Primary (top)", $primaryCam)
-                    camPicker("Bottom-left", $secondaryCam)
-                    camPicker("Bottom-right", $tertiaryCam)
+                    camPicker("Primary", $primaryCam)
+                    camPicker("Secondary", $secondaryCam)
+                    camPicker("Tertiary", $tertiaryCam, allowNone: true)
                 }
                 .padding(.leading, 2)
             }
@@ -406,13 +406,17 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private func camPicker(_ title: String, _ sel: Binding<String>) -> some View {
+    private func camPicker(_ title: String, _ sel: Binding<String>, allowNone: Bool = false) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(title).font(.caption2).foregroundStyle(.secondary)
             Picker("", selection: sel) {
                 Text("Road").tag("road")
                 Text("Wide").tag("wide")
                 Text("Driver").tag("driver")
+                // Only the tertiary slot may be empty: with primary + secondary alone the
+                // combined video is the two of them side by side. A "none" secondary would
+                // just duplicate the primary's individual video, so it isn't offered.
+                if allowNone { Text("None").tag("none") }
             }
             .labelsHidden()
             .frame(width: 110)

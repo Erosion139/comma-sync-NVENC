@@ -95,15 +95,15 @@
       <label class="toggle">
         <span class="tmeta">
           <b>Also make a combined multi-angle video</b>
-          <small>One extra file with all cameras — 2 side by side, or 3 with the main angle on top and the other two below</small>
+          <small>One extra file — 2 angles side by side, or 3 with the primary on top and the other two below. Set Tertiary to None to combine just two even when a third camera exists.</small>
         </span>
         <input type="checkbox" id="combined" />
         <span class="switch" aria-hidden="true"></span>
       </label>
       <div id="combinedRoles" class="roles hidden">
-        <label class="role">Primary (top)<select id="primaryCam"><option value="road">Road</option><option value="wide">Wide</option><option value="driver">Driver</option></select></label>
-        <label class="role">Bottom-left<select id="secondaryCam"><option value="road">Road</option><option value="wide">Wide</option><option value="driver">Driver</option></select></label>
-        <label class="role">Bottom-right<select id="tertiaryCam"><option value="road">Road</option><option value="wide">Wide</option><option value="driver">Driver</option></select></label>
+        <label class="role">Primary<select id="primaryCam"><option value="road">Road</option><option value="wide">Wide</option><option value="driver">Driver</option></select></label>
+        <label class="role">Secondary<select id="secondaryCam"><option value="road">Road</option><option value="wide">Wide</option><option value="driver">Driver</option></select></label>
+        <label class="role">Tertiary<select id="tertiaryCam"><option value="road">Road</option><option value="wide">Wide</option><option value="driver">Driver</option><option value="none">None</option></select></label>
       </div>
     </section>
 

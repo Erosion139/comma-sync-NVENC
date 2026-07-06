@@ -323,7 +323,9 @@ func combineVideo(outdir, stamp, suffix string) {
 	seen := map[string]bool{}
 	var inputs, roles []string
 	for _, r := range []string{primaryCam(), secondaryCam(), tertiaryCam()} {
-		if seen[r] {
+		// "none" (offered for the tertiary slot in the UIs) leaves that slot empty on
+		// purpose: even on a 3-camera drive, the other two roles combine side by side.
+		if r == "" || r == "none" || seen[r] {
 			continue
 		}
 		p := filepath.Join(outdir, stamp+"__"+r+suffix+".mp4")
