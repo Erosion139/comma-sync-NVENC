@@ -102,9 +102,23 @@ The comma only allows computers whose SSH key is registered to it via a GitHub a
    - **macOS / Linux:** `~/.ssh/id_ed25519.pub`
    - **Windows:** `%USERPROFILE%\.ssh\id_ed25519.pub` (typically
      `C:\Users\<your username>\.ssh\id_ed25519.pub`)
-2. **Add the `.pub` key to a GitHub account.** Open the `.pub` file in any text editor
-   (Notepad, TextEdit, etc.) and copy its entire contents — it's one long line starting
-   with `ssh-ed25519`. Go to
+
+   That `~` is just shorthand for your home folder, not a real folder to browse to —
+   the easiest way to get the key is straight from the terminal. **To open it** in
+   your OS's default text editor, paste one of these into the same terminal window and
+   press Return:
+   - **macOS:** `open -e ~/.ssh/id_ed25519.pub`
+   - **Linux:** `xdg-open ~/.ssh/id_ed25519.pub`
+   - **Windows (PowerShell):** `notepad $env:USERPROFILE\.ssh\id_ed25519.pub`
+
+   Or **skip opening it entirely** and copy the key straight to your clipboard:
+   - **macOS:** `pbcopy < ~/.ssh/id_ed25519.pub`
+   - **Linux:** `xclip -sel clip < ~/.ssh/id_ed25519.pub` (if that command isn't found,
+     install it first: `sudo apt install xclip`, then run it again)
+   - **Windows (PowerShell):** `Get-Content $env:USERPROFILE\.ssh\id_ed25519.pub | Set-Clipboard`
+2. **Add the `.pub` key to a GitHub account.** If you copied it to the clipboard above,
+   just paste it. Otherwise, in the text editor that opened, select all and copy — it's
+   one long line starting with `ssh-ed25519`. Go to
    [github.com/settings/keys](https://github.com/settings/keys) → **New SSH key**,
    paste it in, and save. (Don't have a GitHub account? Making one is free at
    [github.com](https://github.com).)
@@ -117,6 +131,11 @@ The comma only allows computers whose SSH key is registered to it via a GitHub a
 2. Open **Comma Sync**, pick where to save videos, and click **Index Drives** to see every
    drive and its size.
 3. Tick the ones you want (or **Download All**) and watch them transfer. Done!
+
+> A **phone hotspot** works fine for this — the transfer stays local between the comma and
+> your computer, so it doesn't use any of your carrier data. A proper **WiFi router** is
+> still the better choice when you have one, since it's generally faster and more stable
+> for long or large drives.
 
 ---
 
