@@ -34,6 +34,9 @@ func primaryCam() string   { return envOr("PRIMARY_CAM", "road") }
 func secondaryCam() string { return envOr("SECONDARY_CAM", "wide") }
 func tertiaryCam() string  { return envOr("TERTIARY_CAM", "driver") }
 
+// Combined 360° equirectangular video for VR headsets (needs all three cameras).
+func with360() bool { return os.Getenv("WITH_360") == "1" }
+
 func commaPort() int {
 	if n, err := strconv.Atoi(os.Getenv("REMOTE_PORT")); err == nil && n > 0 {
 		return n

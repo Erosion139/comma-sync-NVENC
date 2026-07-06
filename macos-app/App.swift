@@ -100,6 +100,7 @@ final class SyncRunner: ObservableObject {
         env["PRIMARY_CAM"] = ud.string(forKey: "primaryCam") ?? "road"
         env["SECONDARY_CAM"] = ud.string(forKey: "secondaryCam") ?? "wide"
         env["TERTIARY_CAM"] = ud.string(forKey: "tertiaryCam") ?? "driver"
+        env["WITH_360"] = ud.bool(forKey: "with360") ? "1" : "0"
         p.environment = env
 
         let pipe = Pipe()
@@ -212,6 +213,7 @@ struct ContentView: View {
     @AppStorage("primaryCam") private var primaryCam = "road"
     @AppStorage("secondaryCam") private var secondaryCam = "wide"
     @AppStorage("tertiaryCam") private var tertiaryCam = "driver"
+    @AppStorage("with360") private var with360 = false
     @StateObject private var runner = SyncRunner()
     @State private var showDrives = false
     @State private var drives: [Drive] = []
@@ -304,6 +306,13 @@ struct ContentView: View {
                 }
                 .padding(.leading, 2)
             }
+            Toggle(isOn: $with360) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Also make a 360° VR video")
+                    Text("An equirectangular file for a VR headset — wide cam in front, driver cam behind, road cam sharpened in the center. Needs all three cameras.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Toggle(isOn: $autoUpdateCheck) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Automatically check for updates")
@@ -340,7 +349,7 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 884)
+        .frame(width: 580, height: 936)
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }

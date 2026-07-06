@@ -27,6 +27,7 @@ function opts() {
     primary: $("primaryCam").value,
     secondary: $("secondaryCam").value,
     tertiary: $("tertiaryCam").value,
+    vr360: $("with360").checked,
   };
 }
 
@@ -210,6 +211,10 @@ $("combined").addEventListener("change", (e) => {
 for (const id of ["primaryCam", "secondaryCam", "tertiaryCam"]) {
   $(id).addEventListener("change", (e) => localStorage.setItem(id, e.target.value));
 }
+
+// ---- 360 VR video ----------------------------------------------------------
+$("with360").checked = localStorage.getItem("with360") === "1";
+$("with360").addEventListener("change", (e) => localStorage.setItem("with360", e.target.checked ? "1" : "0"));
 
 // ---- update check -----------------------------------------------------------
 // On by default; the core reads only GitHub's public releases list (no data sent).

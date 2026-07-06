@@ -31,6 +31,8 @@ struct Opts {
     secondary: String,
     #[serde(default)]
     tertiary: String,
+    #[serde(default)]
+    vr360: bool,
 }
 
 /// Locate the core binary: $COMMA_SYNC_BIN, then next to this app, then PATH.
@@ -73,6 +75,7 @@ fn core_command(opts: &Opts, args: &[&str]) -> Command {
     if !opts.tertiary.is_empty() {
         cmd.env("TERTIARY_CAM", &opts.tertiary);
     }
+    cmd.env("WITH_360", if opts.vr360 { "1" } else { "0" });
     cmd
 }
 

@@ -10,7 +10,7 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 CORE="$ROOT/core"
 APP="$ROOT/Comma Sync.app"
-APP_VERSION="${APP_VERSION:-1.1.1}"
+APP_VERSION="${APP_VERSION:-1.1.2}"
 
 echo "==> Building universal Go core (arm64 + x86_64)"
 ( cd "$CORE"
