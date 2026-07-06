@@ -83,12 +83,31 @@ Grab the latest build for your system from the
 
 The comma only allows computers whose SSH key is registered to it via a GitHub account.
 
-1. **Make an SSH key** (skip if you already have `~/.ssh/id_ed25519`):
-   - **macOS / Linux:** `ssh-keygen -t ed25519` → key at `~/.ssh/id_ed25519.pub`
-   - **Windows:** `ssh-keygen -t ed25519` in **PowerShell** (built into Windows 10/11) → key at
-     `%USERPROFILE%\.ssh\id_ed25519.pub`
-2. **Add the `.pub` key to a GitHub account** at
-   [github.com/settings/keys](https://github.com/settings/keys) → *New SSH key*.
+1. **Make an SSH key.** This is a pair of files your computer uses to prove it's you —
+   you only need to do this once per computer (skip it if you already have a file at
+   `~/.ssh/id_ed25519`).
+   - **macOS:** open **Terminal** (⌘+Space, type "Terminal", press Return).
+   - **Linux:** open your terminal app.
+   - **Windows:** open **PowerShell** (press the Windows key, type "PowerShell", press
+     Enter) — it's built into Windows 10/11, nothing to install.
+
+   Then, in that terminal window, type this and press Return:
+   ```
+   ssh-keygen -t ed25519
+   ```
+   It'll ask **"Enter file in which to save the key"** and **"Enter passphrase"** —
+   just press Return at each prompt to accept the defaults (no passphrase). That
+   creates two files: a private key (never share this one) and a matching `.pub`
+   ("public") file, which is the one you'll copy in the next step:
+   - **macOS / Linux:** `~/.ssh/id_ed25519.pub`
+   - **Windows:** `%USERPROFILE%\.ssh\id_ed25519.pub` (typically
+     `C:\Users\<your username>\.ssh\id_ed25519.pub`)
+2. **Add the `.pub` key to a GitHub account.** Open the `.pub` file in any text editor
+   (Notepad, TextEdit, etc.) and copy its entire contents — it's one long line starting
+   with `ssh-ed25519`. Go to
+   [github.com/settings/keys](https://github.com/settings/keys) → **New SSH key**,
+   paste it in, and save. (Don't have a GitHub account? Making one is free at
+   [github.com](https://github.com).)
 3. **On the comma:** Settings → Developer → enable **SSH**, and enter **that GitHub username**.
    (On sunnypilot it's under the Developer section.)
 
