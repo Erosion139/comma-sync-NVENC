@@ -29,7 +29,7 @@ func equirect360Video(outdir, stamp, suffix string) {
 	}
 
 	out := filepath.Join(outdir, stamp+"__vr360"+suffix+".mp4")
-	if mp4OK(out) {
+	if mp4OK(out) && outputFresh(out, []string{wide, driver, road}) {
 		logf("      360 already rendered — skipped re-encode: %s", filepath.Base(out))
 		return
 	}

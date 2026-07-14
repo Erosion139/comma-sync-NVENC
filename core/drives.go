@@ -40,13 +40,33 @@ func hasAudioFile(path string) bool {
 // listDrives merges drives whose chunks are on this computer with drives still on
 // the comma (only the latter are "device").
 func listDrives() []Drive {
+	device := listDevice()
+	devByRoute := map[string]Drive{}
+	for _, d := range device {
+		devByRoute[d.Route] = d
+	}
+
 	seen := map[string]bool{}
 	var out []Drive
 	for _, d := range listLocal() {
 		seen[d.Route] = true
+		// If the drive is still on the comma, trust the comma's recording-start stamp,
+		// camera set and segment count. They describe the whole drive, so the index
+		// stays correct even when the local copy is only partially downloaded — a partial
+		// local copy can otherwise compute an earliest mtime off the wrong segment and
+		// show a timestamp that won't match the finished output.
+		if dev, ok := devByRoute[d.Route]; ok {
+			d.Stamp = dev.Stamp
+			if len(dev.Cameras) > len(d.Cameras) {
+				d.Cameras = dev.Cameras
+			}
+			if dev.Segments > d.Segments {
+				d.Segments = dev.Segments
+			}
+		}
 		out = append(out, d)
 	}
-	for _, d := range listDevice() {
+	for _, d := range device {
 		if !seen[d.Route] {
 			out = append(out, d)
 		}

@@ -128,6 +128,19 @@ func pullRoute(c *ssh.Client, route string) error {
 			return err
 		}
 	}
+	// Verify every file the device listed is present locally at its full size. A dropped
+	// connection can end a copy early without an error (premature EOF), so this is what
+	// actually guarantees the drive is complete before we let it be stitched. A caller
+	// that gets an error here should retry — pullFile resumes each partial file.
+	for _, f := range files {
+		st, err := os.Stat(f.lpath)
+		if err != nil {
+			return fmt.Errorf("incomplete: %s is missing", filepath.Base(f.lpath))
+		}
+		if st.Size() != f.size {
+			return fmt.Errorf("incomplete: %s is %d/%d bytes", filepath.Base(f.lpath), st.Size(), f.size)
+		}
+	}
 	emit(ProgressEvent{Type: "progress", Route: route, Phase: "download", Percent: 100})
 	return nil
 }
@@ -173,6 +186,53 @@ func pullFile(sc *sftp.Client, rpath, lpath string, size int64, mtime time.Time,
 	}
 	_ = os.Chtimes(lpath, mtime, mtime) // preserve device mtime → correct stamp
 	return nil
+}
+
+func backoff(attempt int) time.Duration {
+	s := attempt * 4
+	if s > 30 {
+		s = 30
+	}
+	return time.Duration(s) * time.Second
+}
+
+// pullRouteResilient downloads a route with automatic reconnect + resume: on a dropped
+// connection it redials — re-discovering the comma every few tries in case a reboot
+// moved it to a new IP — and continues where it left off (pullFile appends to partial
+// files, skips complete ones). It only returns nil once pullRoute confirms every file
+// is fully downloaded, so a partial transfer never looks like success.
+func pullRouteResilient(route, host string, port int) error {
+	const maxAttempts = 40
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if c, err := dial(host, port, 15*time.Second); err == nil {
+			lastErr = pullRoute(c, route)
+			c.Close()
+			if lastErr == nil {
+				return nil
+			}
+		} else {
+			lastErr = err
+		}
+		if attempt >= maxAttempts {
+			break
+		}
+		logf("   ...transfer of %s dropped (%v); reconnecting (attempt %d/%d)…", route, lastErr, attempt, maxAttempts)
+		time.Sleep(backoff(attempt))
+		if attempt%3 == 0 && !useUSB() {
+			if h, p, cl, e := target(); e == nil {
+				host, port = h, p
+				cl()
+			}
+		}
+	}
+	return lastErr
+}
+
+// routeOnDevice reports whether the route still has segments on the comma.
+func routeOnDevice(c *ssh.Client, route string) bool {
+	out, _ := runCmd(c, fmt.Sprintf("ls -1d %s%s--*/ 2>/dev/null | head -1", remotePath, route))
+	return strings.TrimSpace(out) != ""
 }
 
 // remoteNewestMtime returns the newest hevc mtime for a route (for the

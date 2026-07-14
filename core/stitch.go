@@ -243,13 +243,17 @@ func buildAudioPCM(dir string, segs []string) (string, float64) {
 // Renders to a ".part" temp and renames into place only once ffmpeg succeeds AND the
 // result is verifiably playable, so an interrupted/failed render never leaves a broken
 // file at the final path (later runs would otherwise mistake it for a finished video).
-func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string) error {
+func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string, segCount int) error {
 	part := out + ".part"
 	os.Remove(part)
+	// Stamp how many segments this was stitched from, so a later reuse check can tell
+	// whether the drive has since had more downloaded (a stale/partial output).
+	segTag := "comment=csync-segs=" + strconv.Itoa(segCount)
 	var cmd *exec.Cmd
 	if audioPCM == "" {
 		cmd = exec.Command("ffmpeg", "-y", "-loglevel", "error",
-			"-framerate", fps(), "-i", combinedHEVC, "-c", "copy", "-tag:v", "hvc1", "-f", "mp4", part)
+			"-framerate", fps(), "-i", combinedHEVC, "-c", "copy", "-tag:v", "hvc1",
+			"-metadata", segTag, "-f", "mp4", part)
 	} else {
 		vdur := float64(countPackets(combinedHEVC)) / fpsFloat()
 		tempo := 1.0
@@ -265,7 +269,8 @@ func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string) erro
 			"-f", "s16le", "-ar", strconv.Itoa(audioRate), "-ac", "1", "-i", audioPCM,
 			"-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
 			"-filter:a", fmt.Sprintf("atempo=%.6f", tempo),
-			"-c:a", "aac", "-b:a", "96k", "-tag:v", "hvc1", "-f", "mp4", part)
+			"-c:a", "aac", "-b:a", "96k", "-tag:v", "hvc1",
+			"-metadata", segTag, "-f", "mp4", part)
 	}
 	if err := cmd.Run(); err != nil {
 		os.Remove(part)
@@ -282,16 +287,8 @@ func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string) erro
 // MP4's comment tag (e.g. "road,driver,wide" = primary,bottom-left,bottom-right), or ""
 // if the file has no such tag (older files, or not one of ours).
 func combinedLayoutTag(path string) string {
-	out, err := exec.Command("ffprobe", "-v", "error", "-show_entries", "format_tags=comment",
-		"-of", "default=nk=1:nw=1", path).Output()
-	if err != nil {
-		return ""
-	}
-	s := strings.TrimSpace(string(out))
-	if strings.HasPrefix(s, "csync-layout=") {
-		return strings.TrimPrefix(s, "csync-layout=")
-	}
-	return ""
+	v, _ := mp4CommentTag(path, "csync-layout=")
+	return v
 }
 
 // freeCombinedPath returns the lowest-numbered combined output path in outdir that
@@ -340,13 +337,20 @@ func combineVideo(outdir, stamp, suffix string) {
 	}
 	layout := strings.Join(roles, ",") // e.g. "road,driver,wide" (primary,bottom-left,bottom-right)
 
-	// Already rendered with this exact layout? Skip and say so. (Checks every combined
-	// export in the folder, including "__combined (2).mp4" variants.)
+	// Already rendered with this exact layout AND still up to date? Skip. (Checks every
+	// combined export in the folder, including "__combined (2).mp4" variants.) If a
+	// same-layout combined exists but is older than the per-camera videos (they were
+	// re-stitched), rebuild it in place rather than leaving it stale.
+	out := ""
 	existing, _ := filepath.Glob(filepath.Join(outdir, stamp+"__combined*.mp4"))
 	for _, m := range existing {
 		if combinedLayoutTag(m) == layout {
-			logf("      combined [%s] already rendered — skipped re-encode: %s", layout, filepath.Base(m))
-			return
+			if outputFresh(m, inputs) {
+				logf("      combined [%s] already rendered — skipped re-encode: %s", layout, filepath.Base(m))
+				return
+			}
+			out = m // stale same-layout combined — rebuild it
+			break
 		}
 	}
 
@@ -360,7 +364,9 @@ func combineVideo(outdir, stamp, suffix string) {
 			"color=c=black:s=1920x1800:r=" + fps() + "[bg];[bg][p]overlay=0:0[b1];[b1][s]overlay=0:1200[b2];[b2][t]overlay=960:1200:shortest=1[v]"
 	}
 
-	out := freeCombinedPath(outdir, stamp)
+	if out == "" {
+		out = freeCombinedPath(outdir, stamp)
+	}
 	part := out + ".part"
 	os.Remove(part)
 	args := []string{"-y", "-loglevel", "error"}
@@ -418,7 +424,11 @@ func stitchRoute(route string, collision bool) error {
 	if withCombined() || with360() {
 		allExist := true
 		for _, cam := range cams {
-			if !mp4OK(filepath.Join(outdir, stamp+"__"+labelFor(cam)+".mp4")) {
+			p := filepath.Join(outdir, stamp+"__"+labelFor(cam)+".mp4")
+			// Reuse only if the existing video is valid AND was stitched from the same
+			// number of segments we have now — otherwise it's stale/partial (e.g. more
+			// chunks were downloaded since) and must be re-stitched.
+			if !mp4OK(p) || individualSegs(p) != len(segs) {
 				allExist = false
 				break
 			}
@@ -459,7 +469,7 @@ func stitchRoute(route string, collision bool) error {
 			continue
 		}
 		emit(ProgressEvent{Type: "progress", Route: route, Phase: "stitch", Percent: 0})
-		if err := muxCamera(combined, audioPCM, audioDur, out); err != nil {
+		if err := muxCamera(combined, audioPCM, audioDur, out, len(segs)); err != nil {
 			emit(ProgressEvent{Type: "error", Route: route, Message: "ffmpeg failed for " + lbl})
 			ok = false
 		} else {
