@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,11 +59,14 @@ func verticalVideo(outdir, stamp, suffix string) {
 	os.Remove(part)
 
 	// [0]=wide [1]=driver [2]=road (optional). Sharpen the wide's center with the road
-	// overlay first, then stack the panes in the chosen order.
+	// overlay first, then stack the panes in the chosen order. The overlay placement is
+	// calibrated per drive (parallax/scene depth moves it a few pixels between drives).
 	var fc string
 	top := "[wtop]"
 	if haveRoad {
-		fc = "[2:v]scale=444:278[rd];[0:v][rd]overlay=720:462[wtop];"
+		a := calibrateRoadOverlay(wide, road)
+		fc = fmt.Sprintf("[2:v]scale=%d:%d[rd];[0:v][rd]overlay=%d:%d[wtop];",
+			even(1928*a.scale), even(1208*a.scale), int(a.x+0.5), int(a.y+0.5))
 	} else {
 		fc = "[0:v]null[wtop];"
 	}
