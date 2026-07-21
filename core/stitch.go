@@ -429,6 +429,17 @@ func stitchRoute(route string, collision bool) error {
 	// renders one only if a combined with the CURRENT layout isn't already present, so
 	// switching the primary/secondary/tertiary and re-running produces the new layout
 	// (as a new export) instead of silently doing nothing or overwriting the old one.
+	// Say which extra outputs are enabled for this drive, so the log always shows
+	// exactly what was requested (and nothing appears without being asked for).
+	onOff := func(b bool) string {
+		if b {
+			return "on"
+		}
+		return "off"
+	}
+	logf("      extra outputs: combined=%s · 360=%s · vertical=%s",
+		onOff(withCombined()), onOff(with360()), onOff(withVertical()))
+
 	if withCombined() || with360() || withVertical() {
 		allExist := true
 		for _, cam := range cams {
