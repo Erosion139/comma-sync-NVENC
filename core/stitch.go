@@ -55,6 +55,11 @@ func removeRouteChunks(route string) {
 
 // routeStamp = earliest hevc mtime across the route's segments (recording start).
 func routeStamp(route string, segs []string) string {
+	// A pinned stamp (from the comma's listing, or an earlier stitch) always wins, so
+	// output folders and the index agree and never drift with local file mtimes.
+	if s := recordedStamp(route); s != "" {
+		return s
+	}
 	var earliest int64 = 1 << 62
 	for _, s := range segs {
 		files, _ := os.ReadDir(filepath.Join(chunksDir(), s))
@@ -69,7 +74,9 @@ func routeStamp(route string, segs []string) string {
 		}
 	}
 	if earliest < (1 << 62) {
-		return stampFromEpoch(earliest)
+		s := stampFromEpoch(earliest)
+		recordStamp(route, s) // pin it so every later list/stitch reuses this exact time
+		return s
 	}
 	return route
 }
@@ -291,11 +298,12 @@ func combinedLayoutTag(path string) string {
 	return v
 }
 
-// freeCombinedPath returns the lowest-numbered combined output path in outdir that
-// doesn't exist yet ("__combined.mp4", then "__combined (2).mp4", ...), so a new layout
-// never overwrites an already-rendered combined with a different layout.
-func freeCombinedPath(outdir, stamp string) string {
-	base := filepath.Join(outdir, stamp+"__combined")
+// freeVariantPath returns the lowest-numbered output path of the given kind in outdir
+// that doesn't exist yet ("__<kind>.mp4", then "__<kind> (2).mp4", ...), so a new
+// variant (a different combined layout, a different vertical arrangement) never
+// overwrites an already-rendered file of the same kind.
+func freeVariantPath(outdir, stamp, kind string) string {
+	base := filepath.Join(outdir, stamp+"__"+kind)
 	if _, err := os.Stat(base + ".mp4"); os.IsNotExist(err) {
 		return base + ".mp4"
 	}
@@ -365,7 +373,7 @@ func combineVideo(outdir, stamp, suffix string) {
 	}
 
 	if out == "" {
-		out = freeCombinedPath(outdir, stamp)
+		out = freeVariantPath(outdir, stamp, "combined")
 	}
 	part := out + ".part"
 	os.Remove(part)
@@ -421,7 +429,7 @@ func stitchRoute(route string, collision bool) error {
 	// renders one only if a combined with the CURRENT layout isn't already present, so
 	// switching the primary/secondary/tertiary and re-running produces the new layout
 	// (as a new export) instead of silently doing nothing or overwriting the old one.
-	if withCombined() || with360() {
+	if withCombined() || with360() || withVertical() {
 		allExist := true
 		for _, cam := range cams {
 			p := filepath.Join(outdir, stamp+"__"+labelFor(cam)+".mp4")
@@ -440,6 +448,9 @@ func stitchRoute(route string, collision bool) error {
 			}
 			if with360() {
 				equirect360Video(outdir, stamp, "")
+			}
+			if withVertical() {
+				verticalVideo(outdir, stamp, "")
 			}
 			return nil
 		}
@@ -486,6 +497,9 @@ func stitchRoute(route string, collision bool) error {
 	}
 	if ok && with360() {
 		equirect360Video(outdir, stamp, suffix)
+	}
+	if ok && withVertical() {
+		verticalVideo(outdir, stamp, suffix)
 	}
 	if !ok {
 		return fmt.Errorf("stitch failed for %s", route)

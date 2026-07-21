@@ -13,22 +13,38 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// progressCounter throttles download progress events for one route.
+// progressCounter throttles download progress events for one route and tracks a
+// smoothed live throughput so the UIs can show MB/s (and a slowdown is visible).
 type progressCounter struct {
-	route      string
+	route       string
 	total, done int64
-	last       time.Time
+	last        time.Time
+	lastDone    int64
+	rateMBps    float64 // exponentially smoothed
 }
 
 func (p *progressCounter) add(n int) {
 	p.done += int64(n)
-	if time.Since(p.last) > 300*time.Millisecond {
+	if p.last.IsZero() {
 		p.last = time.Now()
+		p.lastDone = p.done
+		return
+	}
+	elapsed := time.Since(p.last)
+	if elapsed > 300*time.Millisecond {
+		inst := float64(p.done-p.lastDone) / elapsed.Seconds() / 1e6 // MB/s since last emit
+		if p.rateMBps == 0 {
+			p.rateMBps = inst
+		} else {
+			p.rateMBps = p.rateMBps*0.7 + inst*0.3
+		}
+		p.last = time.Now()
+		p.lastDone = p.done
 		pct := 0.0
 		if p.total > 0 {
 			pct = float64(p.done) / float64(p.total) * 100
 		}
-		emit(ProgressEvent{Type: "progress", Route: p.route, Phase: "download", Percent: pct})
+		emit(ProgressEvent{Type: "progress", Route: p.route, Phase: "download", Percent: pct, RateMBps: p.rateMBps})
 	}
 }
 

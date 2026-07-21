@@ -53,6 +53,30 @@ func outputFresh(out string, inputs []string) bool {
 	return true
 }
 
+// stitchedOutputsOK verifies a route's stitched per-camera videos actually exist, are
+// playable, and were built from every segment currently on disk. This is the gate for
+// deleting raw chunks: chunks are only removed once the outputs they'd be needed to
+// re-create are confirmed present and complete.
+func stitchedOutputsOK(route string) bool {
+	segs := localSegs(route)
+	if len(segs) == 0 {
+		return false
+	}
+	cams := camerasOf(segs)
+	if len(cams) == 0 {
+		return false
+	}
+	stamp := routeStamp(route, segs)
+	outdir := filepath.Join(rootDir(), stamp)
+	for _, cam := range cams {
+		p := filepath.Join(outdir, stamp+"__"+labelFor(cam)+".mp4")
+		if !mp4OK(p) || individualSegs(p) != len(segs) {
+			return false
+		}
+	}
+	return true
+}
+
 // localRouteLooksComplete is the offline completeness heuristic, used only when the
 // comma can't be reached to confirm against it. A mid-transfer drop leaves the last
 // segment missing some cameras (or a gap in the segment numbering), so we require:

@@ -85,6 +85,15 @@
       <div class="divider"></div>
       <label class="toggle">
         <span class="tmeta">
+          <b>Download all drives first, then stitch</b>
+          <small>Finishes every transfer while the comma is reachable, then renders afterwards. Off = stitch each drive right after it downloads.</small>
+        </span>
+        <input type="checkbox" id="allFirst" checked />
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="divider"></div>
+      <label class="toggle">
+        <span class="tmeta">
           <b>Automatically check for updates</b>
           <small>Tells you when a newer version is on GitHub — only reads the public releases list, sends no data</small>
         </span>
@@ -94,7 +103,7 @@
       <div class="divider"></div>
       <label class="toggle">
         <span class="tmeta">
-          <b>Also make a combined multi-angle video</b>
+          <b>Make a combined multi-angle video</b>
           <small>One extra file — 2 angles side by side, or 3 with the primary on top and the other two below. Set Tertiary to None to combine just two even when a third camera exists.</small>
         </span>
         <input type="checkbox" id="combined" />
@@ -108,24 +117,32 @@
       <div class="divider"></div>
       <label class="toggle">
         <span class="tmeta">
-          <b>Also make a 360° VR video</b>
+          <b>Make a 360° VR video</b>
           <small>An equirectangular file for a VR headset — wide cam in front, driver cam behind, road cam sharpened in the center. Needs all three cameras.</small>
         </span>
         <input type="checkbox" id="with360" />
         <span class="switch" aria-hidden="true"></span>
       </label>
+      <div class="divider"></div>
+      <label class="toggle">
+        <span class="tmeta">
+          <b>Make a vertical phone video</b>
+          <small>A portrait file made for phone screens — the wide cam (with the road cam sharpened over its center) stacked with the driver cam.</small>
+        </span>
+        <input type="checkbox" id="withVertical" />
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div id="verticalRoles" class="roles hidden">
+        <label class="role">Driver cam<select id="verticalPos"><option value="bottom">Bottom</option><option value="top">Top</option></select></label>
+      </div>
     </section>
 
     <div class="actions">
-      <button class="btn primary" id="syncBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11M7 10l5 5 5-5M5 20.5h14" /></svg>
-        Sync New
-      </button>
       <button class="btn danger hidden" id="stopBtn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.4" /></svg>
         Stop
       </button>
-      <button class="btn" id="indexBtn">
+      <button class="btn primary" id="indexBtn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h12M9 12h12M9 18h12" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></svg>
         Index Drives
       </button>
@@ -155,6 +172,7 @@
       </div>
       <div id="driveList" class="drivelist"></div>
       <div class="sheetFoot" id="sheetFoot">
+        <button class="btn" id="syncBtn" title="Download and stitch every new drive on the comma that isn't synced yet">Sync New</button>
         <button class="btn" id="restitchSelected" title="Re-render the selected drives from footage already downloaded — e.g. to apply a new multi-angle layout. Already-rendered layouts are skipped.">Restitch Selected</button>
         <button class="btn" id="dlSelected">Download Selected</button>
         <button class="btn primary" id="dlAll">Download All</button>

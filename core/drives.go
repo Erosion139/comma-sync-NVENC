@@ -124,9 +124,14 @@ func listLocal() []Drive {
 			cams = append(cams, labelFor(c))
 		}
 		sort.Strings(cams)
-		stamp := route
-		if earliest < (1 << 62) {
-			stamp = stampFromEpoch(earliest)
+		// Prefer the pinned stamp (recorded from the comma or at stitch time) so the
+		// listed time can't drift with local file mtimes and matches the output folder.
+		stamp := recordedStamp(route)
+		if stamp == "" {
+			stamp = route
+			if earliest < (1 << 62) {
+				stamp = stampFromEpoch(earliest)
+			}
 		}
 		audio := lastQ != "" && hasAudioFile(lastQ)
 		drives = append(drives, Drive{
@@ -180,6 +185,7 @@ func listDeviceWith(c *ssh.Client) []Drive {
 		stamp := route
 		if mt, err := strconv.ParseInt(f[1], 10, 64); err == nil && mt > 0 {
 			stamp = stampFromEpoch(mt)
+			recordStamp(route, stamp) // pin the device's authoritative stamp
 		}
 		var cams []string
 		for _, cam := range strings.Split(f[2], ",") {

@@ -28,6 +28,9 @@ function opts() {
     secondary: $("secondaryCam").value,
     tertiary: $("tertiaryCam").value,
     vr360: $("with360").checked,
+    vertical: $("withVertical").checked,
+    vertical_pos: $("verticalPos").value,
+    all_first: $("allFirst").checked,
   };
 }
 
@@ -86,11 +89,12 @@ listen("core-event", (e) => {
   switch (ev.type) {
     case "progress": {
       const pct = Math.round(ev.percent || 0);
+      const rate = ev.rateMBps > 0 ? " · " + ev.rateMBps.toFixed(1) + " MB/s" : "";
       $("progFill").style.width = pct + "%";
-      $("progPct").textContent = pct + "%";
+      $("progPct").textContent = pct + "%" + rate;
       $("progStatus").textContent = (ev.phase || "") + (ev.route ? " · " + ev.route : "");
       if (ev.phase === "stitch") updateRow(ev.route, "Stitching…", null);
-      else updateRow(ev.route, pct + "%", pct);
+      else updateRow(ev.route, pct + "%" + rate, pct);
       break;
     }
     case "drive": logLine("==> " + ev.message); break;
@@ -109,7 +113,10 @@ document.querySelectorAll("[data-pick]").forEach((b) => {
     refreshPaths();
   });
 });
-$("syncBtn").addEventListener("click", () => runQueue([[]]));            // sync new
+$("syncBtn").addEventListener("click", () => {                           // sync new (in the sheet)
+  $("sheet").classList.add("hidden");
+  runQueue([[]]);
+});
 $("stopBtn").addEventListener("click", () => { jobQueue = []; invoke("cancel_job"); });
 $("indexBtn").addEventListener("click", openSheet);
 $("closeSheet").addEventListener("click", () => $("sheet").classList.add("hidden"));
@@ -177,7 +184,8 @@ function updateRow(route, text, pct) {
   if (!row) return;
   const st = row.querySelector(".status");
   if (pct != null && pct < 100) {
-    st.innerHTML = `<span class="minibar"><i style="width:${pct}%"></i></span> ${pct}%`;
+    st.innerHTML = `<span class="minibar"><i style="width:${pct}%"></i></span> `;
+    st.append(text); // e.g. "42% · 5.8 MB/s" — append as text, never HTML
   } else {
     st.textContent = text;
   }
@@ -215,6 +223,21 @@ for (const id of ["primaryCam", "secondaryCam", "tertiaryCam"]) {
 // ---- 360 VR video ----------------------------------------------------------
 $("with360").checked = localStorage.getItem("with360") === "1";
 $("with360").addEventListener("change", (e) => localStorage.setItem("with360", e.target.checked ? "1" : "0"));
+
+// ---- vertical phone video ---------------------------------------------------
+function syncVerticalUI() { $("verticalRoles").classList.toggle("hidden", !$("withVertical").checked); }
+$("withVertical").checked = localStorage.getItem("withVertical") === "1";
+$("verticalPos").value = localStorage.getItem("verticalPos") || "bottom";
+syncVerticalUI();
+$("withVertical").addEventListener("change", (e) => {
+  localStorage.setItem("withVertical", e.target.checked ? "1" : "0");
+  syncVerticalUI();
+});
+$("verticalPos").addEventListener("change", (e) => localStorage.setItem("verticalPos", e.target.value));
+
+// ---- sync order (default: download everything first) ------------------------
+$("allFirst").checked = localStorage.getItem("allFirst") !== "0";
+$("allFirst").addEventListener("change", (e) => localStorage.setItem("allFirst", e.target.checked ? "1" : "0"));
 
 // ---- update check -----------------------------------------------------------
 // On by default; the core reads only GitHub's public releases list (no data sent).

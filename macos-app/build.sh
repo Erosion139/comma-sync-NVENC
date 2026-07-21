@@ -9,7 +9,10 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$DIR/.." && pwd)"
 CORE="$ROOT/core"
-APP="$ROOT/Comma Sync.app"
+# APP_NAME lets a test build install alongside the real app (e.g. "Comma Sync Beta").
+# It keeps the same bundle identifier on purpose, so settings/folders carry over.
+APP_NAME="${APP_NAME:-Comma Sync}"
+APP="$ROOT/${APP_NAME}.app"
 APP_VERSION="${APP_VERSION:-1.1.3}"
 
 echo "==> Building universal Go core (arm64 + x86_64)"
@@ -44,8 +47,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>CFBundleName</key><string>Comma Sync</string>
-  <key>CFBundleDisplayName</key><string>Comma Sync</string>
+  <key>CFBundleName</key><string>${APP_NAME}</string>
+  <key>CFBundleDisplayName</key><string>${APP_NAME}</string>
   <key>CFBundleExecutable</key><string>CommaSync</string>
   <key>CFBundleIconFile</key><string>icon</string>
   <key>CFBundleIdentifier</key><string>com.example.commasync</string>

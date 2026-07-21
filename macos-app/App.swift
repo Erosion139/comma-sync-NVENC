@@ -32,6 +32,7 @@ final class SyncRunner: ObservableObject {
     @Published var batchDone = 0
     @Published var progress: Double? = nil
     @Published var statusLine = ""
+    @Published var rateMBps: Double? = nil
     @Published var currentRoute: String? = nil
     @Published var batchRoutes: [String] = []
     @Published var doneRoutes: Set<String> = []
@@ -100,7 +101,11 @@ final class SyncRunner: ObservableObject {
         env["PRIMARY_CAM"] = ud.string(forKey: "primaryCam") ?? "road"
         env["SECONDARY_CAM"] = ud.string(forKey: "secondaryCam") ?? "wide"
         env["TERTIARY_CAM"] = ud.string(forKey: "tertiaryCam") ?? "driver"
+        let allFirst = (ud.object(forKey: "syncAllFirst") as? Bool) ?? true
+        env["SYNC_ORDER"] = allFirst ? "all-first" : "per-drive"
         env["WITH_360"] = ud.bool(forKey: "with360") ? "1" : "0"
+        env["WITH_VERTICAL"] = ud.bool(forKey: "withVertical") ? "1" : "0"
+        env["VERTICAL_DRIVER_POS"] = ud.string(forKey: "verticalDriverPos") ?? "bottom"
         p.environment = env
 
         let pipe = Pipe()
@@ -143,9 +148,11 @@ final class SyncRunner: ObservableObject {
             case "progress":
                 if ev.phase == "stitch" {
                     progress = nil
+                    rateMBps = nil
                     statusLine = "Stitching video…"
                 } else {
                     progress = (ev.percent ?? 0) / 100.0
+                    if let r = ev.rateMBps, r > 0 { rateMBps = r }
                     statusLine = "Downloading" + (ev.route.map { " · \($0)" } ?? "")
                 }
             case "drive", "log", "done":
@@ -176,6 +183,7 @@ struct CoreEvent: Decodable {
     let route: String?
     let phase: String?
     let percent: Double?
+    let rateMBps: Double?
     let message: String?
 }
 
@@ -208,16 +216,20 @@ struct ContentView: View {
     @AppStorage("autoDelete") private var autoDelete = false
     @AppStorage("syncAudio") private var syncAudio = true
     @AppStorage("limitPower") private var limitPower = false
+    @AppStorage("syncAllFirst") private var syncAllFirst = true
     @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
     @AppStorage("withCombined") private var withCombined = false
     @AppStorage("primaryCam") private var primaryCam = "road"
     @AppStorage("secondaryCam") private var secondaryCam = "wide"
     @AppStorage("tertiaryCam") private var tertiaryCam = "driver"
     @AppStorage("with360") private var with360 = false
+    @AppStorage("withVertical") private var withVertical = false
+    @AppStorage("verticalDriverPos") private var verticalDriverPos = "bottom"
     @StateObject private var runner = SyncRunner()
     @State private var showDrives = false
     @State private var drives: [Drive] = []
     @State private var loadingDrives = false
+    @State private var scanOffline = false
     @State private var updateVersion: String? = nil
     @State private var updateURL = ""
 
@@ -291,9 +303,16 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Toggle(isOn: $syncAllFirst) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Download all drives first, then stitch")
+                    Text("Finishes every transfer while the comma is reachable, then renders afterwards. Off = stitch each drive right after it downloads.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Toggle(isOn: $withCombined) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Also make a combined multi-angle video")
+                    Text("Make a combined multi-angle video")
                     Text("One extra file — 2 angles side by side, or 3 with the primary on top and the other two below. Set Tertiary to None to combine just two even when a third camera exists.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -308,10 +327,29 @@ struct ContentView: View {
             }
             Toggle(isOn: $with360) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Also make a 360° VR video")
+                    Text("Make a 360° VR video")
                     Text("An equirectangular file for a VR headset — wide cam in front, driver cam behind, road cam sharpened in the center. Needs all three cameras.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            Toggle(isOn: $withVertical) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Make a vertical phone video")
+                    Text("A portrait file made for phone screens — the wide cam (with the road cam sharpened over its center) stacked with the driver cam.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if withVertical {
+                HStack(spacing: 10) {
+                    Text("Driver cam").font(.caption2).foregroundStyle(.secondary)
+                    Picker("", selection: $verticalDriverPos) {
+                        Text("Bottom").tag("bottom")
+                        Text("Top").tag("top")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 160)
+                    Spacer()
+                }
+                .padding(.leading, 2)
             }
             Toggle(isOn: $autoUpdateCheck) {
                 VStack(alignment: .leading, spacing: 1) {
@@ -330,16 +368,20 @@ struct ContentView: View {
                         Label("Stop", systemImage: "stop.circle.fill").frame(maxWidth: .infinity)
                     }
                     .controlSize(.large).buttonStyle(.borderedProminent).tint(.red)
+                    // The index page stays reachable mid-sync — it shows live
+                    // per-drive progress and can queue nothing while running.
+                    Button(action: openDrives) {
+                        Label("Index Drives", systemImage: "list.bullet.rectangle")
+                    }
+                    .controlSize(.large)
                 } else {
-                    Button(action: syncNow) {
-                        Label("Sync New", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
+                    // Index Drives is the one entry point: browse everything and pick
+                    // what to download. Sync New lives on that page (the rarer path).
+                    Button(action: openDrives) {
+                        Label("Index Drives", systemImage: "list.bullet.rectangle").frame(maxWidth: .infinity)
                     }
                     .controlSize(.large).buttonStyle(.borderedProminent).disabled(outputDir.isEmpty)
                 }
-                Button(action: openDrives) {
-                    Label("Index Drives", systemImage: "list.bullet.rectangle")
-                }
-                .controlSize(.large)
             }
 
             if runner.isRunning {
@@ -349,7 +391,7 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 936)
+        .frame(width: 580, height: 1062)
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }
@@ -364,13 +406,14 @@ struct ContentView: View {
             }
         }
         .sheet(isPresented: $showDrives) {
-            DrivesSheet(drives: drives, isLoading: loadingDrives, runner: runner,
+            DrivesSheet(drives: drives, isLoading: loadingDrives, offline: scanOffline, runner: runner,
                         onBatch: { routes in
                             guard !routes.isEmpty, !runner.isRunning else { return }
                             runner.startBatch(routes: routes, output: outputDir, chunks: chunksDir,
                                               autoDelete: autoDelete, syncAudio: syncAudio,
                                               limitPower: limitPower, script: scriptPath)
                         },
+                        onSyncNew: { syncNow() },
                         onRefresh: { refreshDrives() },
                         onClose: { showDrives = false })
         }
@@ -384,8 +427,14 @@ struct ContentView: View {
             }
             if let p = runner.progress {
                 ProgressView(value: p)
-                HStack { Text("\(Int(p * 100))%"); Spacer(); Text(runner.statusLine) }
-                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Text("\(Int(p * 100))%")
+                    if let r = runner.rateMBps {
+                        Text(String(format: "· %.1f MB/s", r)).monospacedDigit()
+                    }
+                    Spacer(); Text(runner.statusLine)
+                }
+                .font(.caption).foregroundStyle(.secondary)
             } else {
                 HStack(spacing: 8) {
                     ProgressView().controlSize(.small)
@@ -531,9 +580,22 @@ struct ContentView: View {
                 loadingDrives = false
                 // Keep the saved list if a scan comes back empty (comma offline,
                 // moved chunks, etc.) instead of blanking what the user had.
-                guard !result.isEmpty else { return }
-                drives = result
-                if let data = try? JSONEncoder().encode(result) {
+                guard !result.isEmpty else { scanOffline = true; return }
+                var merged = result
+                // If the comma wasn't reachable, this scan is local-only. Keep the
+                // cached device-side drives instead of silently dropping them —
+                // otherwise a reload while offline "loses" drives and can change
+                // what the list shows compared to the last good scan.
+                let sawDevice = result.contains { $0.location == "device" }
+                scanOffline = !sawDevice
+                if !sawDevice {
+                    let have = Set(result.map { $0.route })
+                    let cached = loadCachedDrives()
+                    merged += cached.filter { $0.location == "device" && !have.contains($0.route) }
+                    merged.sort { $0.stamp > $1.stamp }
+                }
+                drives = merged
+                if let data = try? JSONEncoder().encode(merged) {
                     UserDefaults.standard.set(data, forKey: "cachedDrives")
                 }
             }
@@ -569,8 +631,10 @@ struct ContentView: View {
 struct DrivesSheet: View {
     let drives: [Drive]
     let isLoading: Bool
+    let offline: Bool
     @ObservedObject var runner: SyncRunner
     let onBatch: ([String]) -> Void
+    let onSyncNew: () -> Void
     let onRefresh: () -> Void
     let onClose: () -> Void
     @State private var selection = Set<String>()
@@ -638,6 +702,12 @@ struct DrivesSheet: View {
                     }
                 } else {
                     HStack(spacing: 10) {
+                        Button {
+                            onSyncNew()
+                        } label: {
+                            Label("Sync New", systemImage: "arrow.down.circle.fill")
+                        }
+                        .help("Download and stitch every new drive on the comma that isn't synced yet")
                         Spacer()
                         Button("Restitch Selected") { onBatch(Array(selection)) }
                             .disabled(selection.isEmpty)
@@ -657,6 +727,9 @@ struct DrivesSheet: View {
     private var headerSubtitle: String {
         if isLoading { return "Scanning this Mac and your comma…" }
         if drives.isEmpty { return "" }
+        if offline {
+            return "\(drives.count) drives · \(totalSizeText) total — comma offline, showing the last known device list"
+        }
         return "\(drives.count) drives · \(totalSizeText) total — on this Mac and still on the comma"
     }
 
@@ -691,7 +764,8 @@ struct DrivesSheet: View {
             if let p = runner.progress {
                 HStack(spacing: 8) {
                     ProgressView(value: p).frame(width: 90)
-                    Text("\(Int(p * 100))%").font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                    Text("\(Int(p * 100))%" + (runner.rateMBps.map { String(format: " · %.1f MB/s", $0) } ?? ""))
+                        .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                 }
             } else {
                 HStack(spacing: 6) {
