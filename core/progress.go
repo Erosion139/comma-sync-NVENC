@@ -10,6 +10,11 @@ import (
 // object per line (for GUIs). Otherwise human-friendly text.
 var jsonProgress bool
 
+// curRoute is the drive being processed right now. The extra-output renderers only get
+// (outdir, stamp), but the UIs key their per-drive rows by route, so they tag their
+// progress events with this instead of guessing.
+var curRoute string
+
 func emit(e ProgressEvent) {
 	if jsonProgress {
 		b, _ := json.Marshal(e)

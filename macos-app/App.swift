@@ -68,7 +68,9 @@ final class SyncRunner: ObservableObject {
         pending = jobs
         cfg = (output, chunks, autoDelete, syncAudio, limitPower, script)
         cancelled = false
-        batchTotal = jobs.count
+        // One `batch` job now carries ALL the drives, so jobs.count is 1 — count the
+        // drives instead, or the progress line reads nonsense like "5/1".
+        batchTotal = max(routes.count, jobs.count)
         batchDone = 0
         batchRoutes = routes
         routeCount = routes.count
@@ -164,6 +166,13 @@ final class SyncRunner: ObservableObject {
                     progress = nil
                     rateMBps = nil
                     statusLine = "Stitching video…"
+                } else if ev.phase == "render" {
+                    // A long re-encode (combined / 360 / vertical). These can run for many
+                    // minutes on a multi-hour drive, so show real percent — with no bar at
+                    // all it was indistinguishable from the app having hung.
+                    rateMBps = nil
+                    progress = (ev.percent ?? 0) / 100.0
+                    statusLine = "Rendering " + (ev.message ?? "video") + "…"
                 } else {
                     progress = (ev.percent ?? 0) / 100.0
                     if let r = ev.rateMBps, r > 0 { rateMBps = r }
@@ -217,6 +226,9 @@ struct Drive: Identifiable, Codable {
     let location: String
     var id: String { route }
     var onDevice: Bool { location == "device" }
+    // Only the stitched per-camera videos remain (raw chunks gone, not on the comma).
+    // These can still gain new derived outputs (combined/360/vertical) from the videos.
+    var stitchedOnly: Bool { location == "stitched" }
     var sizeText: String {
         let mb = Double(sizeKB) / 1024.0
         return mb >= 1024 ? String(format: "%.1f GB", mb / 1024) : String(format: "%.0f MB", mb)
@@ -354,7 +366,7 @@ struct ContentView: View {
             }
             Toggle(isOn: $withVertical) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Make a vertical phone video")
+                    Text("Make a vertical video")
                     Text("A portrait file made for phone screens — the wide cam (with the road cam sharpened over its center) stacked with the driver cam.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -717,7 +729,8 @@ struct DrivesSheet: View {
                 if runner.isRunning {
                     HStack(spacing: 8) {
                         ProgressView().controlSize(.small)
-                        Text("Transferring \(runner.doneRoutes.count)/\(runner.batchTotal) — you can close this and come back.")
+                        // Phase-neutral: a batch may be transferring OR re-encoding here.
+                        Text("\(runner.doneRoutes.count)/\(runner.batchTotal) done — you can close this and come back.")
                             .font(.caption).foregroundStyle(.secondary)
                         Spacer()
                         Button(role: .destructive) { runner.cancel() } label: { Text("Stop") }
@@ -820,11 +833,12 @@ struct DrivesSheet: View {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                         .help("Last attempt failed")
                 } else {
-                    Text(d.onDevice ? "on comma" : "on Mac")
+                    Text(d.stitchedOnly ? "videos only" : (d.onDevice ? "on comma" : "on Mac"))
                         .font(.caption2).padding(.horizontal, 7).padding(.vertical, 3)
                         .background(Capsule().fill(Color(nsColor: .quaternaryLabelColor)))
+                        .help(d.stitchedOnly ? "Raw chunks are gone — rebuild new outputs (combined/360/vertical) from the stitched videos" : "")
                 }
-                Button((runner.doneRoutes.contains(d.route) || !d.onDevice) ? "Re-stitch" : "Download") {
+                Button(buttonTitle(d)) {
                     onBatch([d.route])
                 }
             }
@@ -833,7 +847,14 @@ struct DrivesSheet: View {
 
     private func icon(_ d: Drive) -> String {
         if d.onDevice { return "arrow.down.circle" }
+        if d.stitchedOnly { return "wand.and.stars" }
         return d.hasAudio == true ? "speaker.wave.2.fill" : "film"
+    }
+    // Video-only drives have no chunks to fetch/re-stitch, so the action is a rebuild of
+    // the derived outputs; everything else keeps Download / Re-stitch.
+    private func buttonTitle(_ d: Drive) -> String {
+        if d.stitchedOnly { return "Rebuild" }
+        return (runner.doneRoutes.contains(d.route) || !d.onDevice) ? "Re-stitch" : "Download"
     }
     private func toggle(_ route: String) {
         if selection.contains(route) { selection.remove(route) } else { selection.insert(route) }

@@ -133,6 +133,9 @@ func cmdBatch(routes []string) error {
 		if localRouteLooksComplete(r) {
 			return nil // already fully downloaded
 		}
+		if len(stitchedCameras(r)) > 0 {
+			return nil // only the stitched videos remain — nothing to fetch; rebuild uses them
+		}
 		return fmt.Errorf("not on the comma and not fully downloaded here")
 	}
 	stitch := func(r string) {
@@ -197,6 +200,10 @@ func cmdDownload(route string) error {
 		}
 	}
 	if len(localSegs(route)) == 0 {
+		if len(stitchedCameras(route)) > 0 {
+			emit(ProgressEvent{Type: "log", Route: route, Message: "==> " + route + " has stitched videos only — nothing to download"})
+			return nil
+		}
 		return fmt.Errorf("no local chunks for %s and the comma isn't reachable", route)
 	}
 	if !localRouteLooksComplete(route) {
@@ -230,6 +237,12 @@ func cmdRestitch(route string) error {
 	}
 
 	if len(localSegs(route)) == 0 {
+		// No chunks and not on the comma — but if the stitched per-camera videos survive
+		// in the output folder, rebuild the derived outputs from them.
+		if rebuildExtrasFromStitched(route) {
+			emit(ProgressEvent{Type: "done", Message: "Rebuilt from stitched videos. Output in: " + rootDir()})
+			return nil
+		}
 		return fmt.Errorf("no local chunks for %s and the comma isn't reachable", route)
 	}
 	if !localRouteLooksComplete(route) {

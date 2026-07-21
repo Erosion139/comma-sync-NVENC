@@ -397,7 +397,7 @@ func combineVideo(outdir, stamp, suffix string) {
 	// Stamp the layout so a later run can tell what's in this file without re-parsing it.
 	args = append(args, "-c:a", "copy", "-movflags", "+faststart",
 		"-metadata", "comment=csync-layout="+layout, "-f", "mp4", part)
-	if err := exec.Command("ffmpeg", args...).Run(); err != nil || !mp4OK(part) {
+	if err := runFFmpegProgress(args, mp4Duration(inputs[0]), "combined video"); err != nil || !mp4OK(part) {
 		os.Remove(part)
 		emit(ProgressEvent{Type: "error", Message: "combined video failed for " + stamp})
 		return
@@ -410,8 +410,16 @@ func combineVideo(outdir, stamp, suffix string) {
 // mux microphone audio from qcamera.ts when present, collision-safe when asked.
 func stitchRoute(route string, collision bool) error {
 	dir := chunksDir()
+	curRoute = route // so the extra-output renderers tag progress with this drive
 	segs := localSegs(route)
 	if len(segs) == 0 {
+		// No raw chunks — but if this drive's stitched per-camera videos are still in the
+		// output folder, we can rebuild the derived outputs (combined/360/vertical) from
+		// them. This is what lets you make new output types from old drives whose chunks
+		// are gone and are no longer on the comma. Here `route` is the stamp folder name.
+		if rebuildExtrasFromStitched(route) {
+			return nil
+		}
 		return fmt.Errorf("no local chunks for %s", route)
 	}
 	cams := camerasOf(segs)

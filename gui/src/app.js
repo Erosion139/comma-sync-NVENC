@@ -92,8 +92,11 @@ listen("core-event", (e) => {
       const rate = ev.rateMBps > 0 ? " · " + ev.rateMBps.toFixed(1) + " MB/s" : "";
       $("progFill").style.width = pct + "%";
       $("progPct").textContent = pct + "%" + rate;
-      $("progStatus").textContent = (ev.phase || "") + (ev.route ? " · " + ev.route : "");
+      $("progStatus").textContent =
+        (ev.phase === "render" ? "Rendering " + (ev.message || "video") : (ev.phase || "")) +
+        (ev.route ? " · " + ev.route : "");
       if (ev.phase === "stitch") updateRow(ev.route, "Stitching…", null);
+      else if (ev.phase === "render") updateRow(ev.route, pct + "%", pct);
       else updateRow(ev.route, pct + "%" + rate, pct);
       break;
     }
@@ -158,6 +161,7 @@ function renderDrives() {
   list.innerHTML = "";
   for (const d of drives) {
     const onComma = d.location === "device";
+    const badge = onComma ? "on comma" : d.location === "stitched" ? "videos only" : "local";
     const audio = d.hasAudio === true ? " · audio" : d.hasAudio === false ? " · no audio" : "";
     const row = document.createElement("div");
     row.className = "drive";
@@ -167,7 +171,7 @@ function renderDrives() {
         <div class="dname">${d.stamp}</div>
         <div class="dsub">${(d.cameras || []).join(", ")}${audio} · ${fmtSize(d.sizeKB)} · ${d.segments} min</div>
       </div>
-      <span class="badge">${onComma ? "on comma" : "local"}</span>
+      <span class="badge">${badge}</span>
       <span class="status"></span>`;
     list.appendChild(row);
     rowByRoute[d.route] = row;

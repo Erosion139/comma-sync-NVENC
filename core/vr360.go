@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -71,7 +70,7 @@ func equirect360Video(outdir, stamp, suffix string) {
 	// grow it without shifting mdat (which would invalidate the sample chunk offsets).
 	args = append(args, "-c:a", "copy", "-f", "mp4", part)
 
-	if err := exec.Command("ffmpeg", args...).Run(); err != nil || !mp4OK(part) {
+	if err := runFFmpegProgress(args, mp4Duration(wide), "360 video"); err != nil || !mp4OK(part) {
 		os.Remove(part)
 		emit(ProgressEvent{Type: "error", Message: "360 video failed for " + stamp})
 		return

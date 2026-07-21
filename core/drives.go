@@ -71,6 +71,21 @@ func listDrives() []Drive {
 			out = append(out, d)
 		}
 	}
+
+	// Drives we only still have as stitched per-camera videos (raw chunks gone, no longer
+	// on the comma). Surface them keyed by stamp so their folder isn't duplicated with a
+	// local/device entry, and so you can build new derived outputs from the old videos.
+	stampSeen := map[string]bool{}
+	for _, d := range out {
+		stampSeen[d.Stamp] = true
+	}
+	for _, d := range listStitched() {
+		if !stampSeen[d.Stamp] {
+			out = append(out, d)
+			stampSeen[d.Stamp] = true
+		}
+	}
+
 	sort.Slice(out, func(i, j int) bool { return out[i].Stamp > out[j].Stamp })
 	return out
 }

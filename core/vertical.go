@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 )
@@ -93,7 +92,7 @@ func verticalVideo(outdir, stamp, suffix string) {
 	args = append(args, "-c:a", "copy", "-movflags", "+faststart",
 		"-metadata", "comment=csync-vertical="+pos, "-f", "mp4", part)
 
-	if err := exec.Command("ffmpeg", args...).Run(); err != nil || !mp4OK(part) {
+	if err := runFFmpegProgress(args, mp4Duration(wide), "vertical video"); err != nil || !mp4OK(part) {
 		os.Remove(part)
 		emit(ProgressEvent{Type: "error", Message: "vertical video failed for " + stamp})
 		return
