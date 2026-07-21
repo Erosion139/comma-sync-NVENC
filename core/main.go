@@ -18,6 +18,7 @@ Usage:
   comma-sync sync [--json]          Download new drives and stitch them
   comma-sync restitch <route> [--json]   Re-stitch one drive (re-downloads if needed)
   comma-sync download <route> [--json]   Download one drive's chunks only (no stitch)
+  comma-sync batch <route...> [--json]   Process several drives (all transfers, then stitches)
   comma-sync update-check [--json]  Check GitHub for a newer release
   comma-sync version
 
@@ -95,6 +96,15 @@ func main() {
 			os.Exit(2)
 		}
 		if err := cmdDownload(positional[0]); err != nil {
+			fail(err)
+		}
+
+	case "batch":
+		if len(positional) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: comma-sync batch <route> [route...]")
+			os.Exit(2)
+		}
+		if err := cmdBatch(positional); err != nil {
 			fail(err)
 		}
 

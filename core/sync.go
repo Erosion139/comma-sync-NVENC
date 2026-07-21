@@ -98,6 +98,83 @@ func stitchCompleteLocalUnprocessed() {
 	}
 }
 
+// cmdBatch processes several drives in ONE run so the core controls the ordering.
+// With "download all first" (the default) it does every transfer before any stitching
+// — the point being to finish pulling off the comma while it's reachable. Otherwise it
+// downloads and stitches each drive in turn. Emits a "routedone" event per finished
+// drive so the UIs can mark rows without needing one process per drive.
+func cmdBatch(routes []string) error {
+	defer keepAwake()()
+	sweepStaleTemps()
+	if len(routes) == 0 {
+		return fmt.Errorf("no drives given")
+	}
+
+	host, port := "", 0
+	if h, p, cl, err := target(); err == nil {
+		host, port = h, p
+		defer cl()
+	}
+
+	download := func(r string) error {
+		if host != "" {
+			onDev := false
+			if c, derr := dial(host, port, 12*time.Second); derr == nil {
+				onDev = routeOnDevice(c, r)
+				c.Close()
+			}
+			if onDev {
+				if e := pullRouteResilient(r, host, port); e != nil && !localRouteLooksComplete(r) {
+					return e
+				}
+				return nil
+			}
+		}
+		if localRouteLooksComplete(r) {
+			return nil // already fully downloaded
+		}
+		return fmt.Errorf("not on the comma and not fully downloaded here")
+	}
+	stitch := func(r string) {
+		if e := stitchRoute(r, false); e != nil {
+			emit(ProgressEvent{Type: "error", Route: r, Message: e.Error()})
+			return
+		}
+		ledgerAdd(r)
+		maybeCleanChunks(r)
+		emit(ProgressEvent{Type: "routedone", Route: r})
+	}
+
+	if syncAllFirst() && len(routes) > 1 {
+		logf("==> Phase 1 of 2 — downloading %d drives (no stitching until every transfer is done)", len(routes))
+		var ready []string
+		for i, r := range routes {
+			logf("==> [%d/%d] Downloading %s", i+1, len(routes), r)
+			if e := download(r); e != nil {
+				emit(ProgressEvent{Type: "error", Route: r, Message: "download didn't finish: " + e.Error()})
+				continue
+			}
+			ready = append(ready, r)
+		}
+		logf("==> Phase 2 of 2 — all transfers done; stitching %d drives", len(ready))
+		for i, r := range ready {
+			logf("==> [%d/%d] Stitching %s", i+1, len(ready), r)
+			stitch(r)
+		}
+	} else {
+		for i, r := range routes {
+			logf("==> [%d/%d] %s", i+1, len(routes), r)
+			if e := download(r); e != nil {
+				emit(ProgressEvent{Type: "error", Route: r, Message: "download didn't finish: " + e.Error()})
+				continue
+			}
+			stitch(r)
+		}
+	}
+	emit(ProgressEvent{Type: "done", Message: "Done. Stitched drives are in: " + rootDir()})
+	return nil
+}
+
 // cmdDownload fetches one drive's chunks (resiliently, verified complete) WITHOUT
 // stitching — the UIs use it to run a batch in two phases when "download all first"
 // is on: every drive transfers while the comma is reachable, then the restitches run.

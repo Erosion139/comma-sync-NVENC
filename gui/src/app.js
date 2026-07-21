@@ -99,6 +99,7 @@ listen("core-event", (e) => {
     }
     case "drive": logLine("==> " + ev.message); break;
     case "log": logLine(ev.message); break;
+    case "routedone": markDone(ev.route); break;
     case "done": logLine(ev.message); markDone(ev.route); break;
     case "error": logLine("!! " + ev.message); break;
   }
@@ -131,14 +132,9 @@ $("restitchSelected").addEventListener("click", () => batch(selectedRoutes()));
 function batch(routes) {
   if (!routes.length) return;
   $("sheet").classList.add("hidden");
-  // With "download all drives first" on, transfer every drive before any stitching,
-  // then run the stitches. Otherwise restitch does download+stitch per drive.
-  const jobs = [];
-  if ($("allFirst").checked && routes.length > 1) {
-    jobs.push(...routes.map((r) => ["download", r]));
-  }
-  jobs.push(...routes.map((r) => ["restitch", r]));
-  runQueue(jobs);
+  // One core process handles the whole batch so IT controls the ordering (with
+  // "download all drives first" on, every transfer finishes before any stitching).
+  runQueue([["batch", ...routes]]);
 }
 
 // ---- indexing sheet ---------------------------------------------------------

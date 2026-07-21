@@ -52,16 +52,10 @@ final class SyncRunner: ObservableObject {
     }
     func startBatch(routes: [String], output: String, chunks: String, autoDelete: Bool,
                     syncAudio: Bool, limitPower: Bool, script: String) {
-        // With "download all drives first" on, run the batch in two phases: every
-        // drive's transfer first, then the stitches. Otherwise each drive downloads
-        // and stitches before moving to the next (restitch does both).
-        let allFirst = (UserDefaults.standard.object(forKey: "syncAllFirst") as? Bool) ?? true
-        var jobs: [Job] = []
-        if allFirst && routes.count > 1 {
-            jobs += routes.map { Job(route: $0, args: ["download", $0]) }
-        }
-        jobs += routes.map { Job(route: $0, args: ["restitch", $0]) }
-        begin(jobs: jobs, routes: routes,
+        // One core process handles the whole batch, so IT controls the ordering:
+        // with "download all drives first" on it finishes every transfer before any
+        // stitching. Per-drive state comes back as events, not one process per drive.
+        begin(jobs: [Job(route: nil, args: ["batch"] + routes)], routes: routes,
               output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, limitPower: limitPower, script: script)
     }
 
@@ -100,14 +94,7 @@ final class SyncRunner: ObservableObject {
         currentRoute = job.route
         progress = nil
         statusLine = ""
-        if routeCount > 1 {
-            let downloading = (job.args.first == "download")
-            let idx = downloading ? batchDone + 1
-                                  : (twoPhase ? batchDone + 1 - routeCount : batchDone + 1)
-            batchLabel = "\(downloading ? "Downloading" : "Stitching") \(min(max(idx, 1), routeCount)) of \(routeCount)"
-        } else {
-            batchLabel = ""
-        }
+        batchLabel = routeCount > 1 ? "\(routeCount) drives" : ""
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: cfg.script)   // the bundled Go core binary
@@ -181,6 +168,12 @@ final class SyncRunner: ObservableObject {
                     progress = (ev.percent ?? 0) / 100.0
                     if let r = ev.rateMBps, r > 0 { rateMBps = r }
                     statusLine = "Downloading" + (ev.route.map { " · \($0)" } ?? "")
+                }
+                if let r = ev.route, !r.isEmpty { currentRoute = r }
+            case "routedone":
+                if let r = ev.route, !r.isEmpty {
+                    doneRoutes.insert(r)
+                    if currentRoute == r { currentRoute = nil }
                 }
             case "drive", "log", "done":
                 progress = nil
