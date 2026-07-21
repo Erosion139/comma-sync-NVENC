@@ -117,15 +117,11 @@
     </section>
 
     <div class="actions">
-      <button class="btn primary" id="syncBtn">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5v11M7 10l5 5 5-5M5 20.5h14" /></svg>
-        Sync New
-      </button>
       <button class="btn danger hidden" id="stopBtn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="6.5" width="11" height="11" rx="2.4" /></svg>
         Stop
       </button>
-      <button class="btn" id="indexBtn">
+      <button class="btn primary" id="indexBtn">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h12M9 12h12M9 18h12" /><path d="M4 6h.01M4 12h.01M4 18h.01" /></svg>
         Index Drives
       </button>
@@ -155,6 +151,7 @@
       </div>
       <div id="driveList" class="drivelist"></div>
       <div class="sheetFoot" id="sheetFoot">
+        <button class="btn" id="syncBtn" title="Download and stitch every new drive on the comma that isn't synced yet">Sync New</button>
         <button class="btn" id="restitchSelected" title="Re-render the selected drives from footage already downloaded — e.g. to apply a new multi-angle layout. Already-rendered layouts are skipped.">Restitch Selected</button>
         <button class="btn" id="dlSelected">Download Selected</button>
         <button class="btn primary" id="dlAll">Download All</button>

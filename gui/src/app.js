@@ -110,7 +110,10 @@ document.querySelectorAll("[data-pick]").forEach((b) => {
     refreshPaths();
   });
 });
-$("syncBtn").addEventListener("click", () => runQueue([[]]));            // sync new
+$("syncBtn").addEventListener("click", () => {                           // sync new (in the sheet)
+  $("sheet").classList.add("hidden");
+  runQueue([[]]);
+});
 $("stopBtn").addEventListener("click", () => { jobQueue = []; invoke("cancel_job"); });
 $("indexBtn").addEventListener("click", openSheet);
 $("closeSheet").addEventListener("click", () => $("sheet").classList.add("hidden"));

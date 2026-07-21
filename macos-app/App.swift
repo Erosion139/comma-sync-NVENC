@@ -359,15 +359,13 @@ struct ContentView: View {
                     }
                     .controlSize(.large).buttonStyle(.borderedProminent).tint(.red)
                 } else {
-                    Button(action: syncNow) {
-                        Label("Sync New", systemImage: "arrow.down.circle.fill").frame(maxWidth: .infinity)
+                    // Index Drives is the one entry point: browse everything and pick
+                    // what to download. Sync New lives on that page (the rarer path).
+                    Button(action: openDrives) {
+                        Label("Index Drives", systemImage: "list.bullet.rectangle").frame(maxWidth: .infinity)
                     }
                     .controlSize(.large).buttonStyle(.borderedProminent).disabled(outputDir.isEmpty)
                 }
-                Button(action: openDrives) {
-                    Label("Index Drives", systemImage: "list.bullet.rectangle")
-                }
-                .controlSize(.large)
             }
 
             if runner.isRunning {
@@ -399,6 +397,7 @@ struct ContentView: View {
                                               autoDelete: autoDelete, syncAudio: syncAudio,
                                               limitPower: limitPower, script: scriptPath)
                         },
+                        onSyncNew: { syncNow() },
                         onRefresh: { refreshDrives() },
                         onClose: { showDrives = false })
         }
@@ -619,6 +618,7 @@ struct DrivesSheet: View {
     let offline: Bool
     @ObservedObject var runner: SyncRunner
     let onBatch: ([String]) -> Void
+    let onSyncNew: () -> Void
     let onRefresh: () -> Void
     let onClose: () -> Void
     @State private var selection = Set<String>()
@@ -686,6 +686,12 @@ struct DrivesSheet: View {
                     }
                 } else {
                     HStack(spacing: 10) {
+                        Button {
+                            onSyncNew()
+                        } label: {
+                            Label("Sync New", systemImage: "arrow.down.circle.fill")
+                        }
+                        .help("Download and stitch every new drive on the comma that isn't synced yet")
                         Spacer()
                         Button("Restitch Selected") { onBatch(Array(selection)) }
                             .disabled(selection.isEmpty)
