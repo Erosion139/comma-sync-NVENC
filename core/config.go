@@ -37,6 +37,16 @@ func tertiaryCam() string  { return envOr("TERTIARY_CAM", "driver") }
 // Combined 360° equirectangular video for VR headsets (needs all three cameras).
 func with360() bool { return os.Getenv("WITH_360") == "1" }
 
+// Vertical phone-format video: wide + driver stacked portrait, road overlaid sharp on
+// the wide. VERTICAL_DRIVER_POS chooses which pane the driver cam takes (bottom|top).
+func withVertical() bool { return os.Getenv("WITH_VERTICAL") == "1" }
+func verticalDriverPos() string {
+	if os.Getenv("VERTICAL_DRIVER_POS") == "top" {
+		return "top"
+	}
+	return "bottom"
+}
+
 func commaPort() int {
 	if n, err := strconv.Atoi(os.Getenv("REMOTE_PORT")); err == nil && n > 0 {
 		return n

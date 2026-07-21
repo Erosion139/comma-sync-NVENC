@@ -421,7 +421,7 @@ func stitchRoute(route string, collision bool) error {
 	// renders one only if a combined with the CURRENT layout isn't already present, so
 	// switching the primary/secondary/tertiary and re-running produces the new layout
 	// (as a new export) instead of silently doing nothing or overwriting the old one.
-	if withCombined() || with360() {
+	if withCombined() || with360() || withVertical() {
 		allExist := true
 		for _, cam := range cams {
 			p := filepath.Join(outdir, stamp+"__"+labelFor(cam)+".mp4")
@@ -440,6 +440,9 @@ func stitchRoute(route string, collision bool) error {
 			}
 			if with360() {
 				equirect360Video(outdir, stamp, "")
+			}
+			if withVertical() {
+				verticalVideo(outdir, stamp, "")
 			}
 			return nil
 		}
@@ -486,6 +489,9 @@ func stitchRoute(route string, collision bool) error {
 	}
 	if ok && with360() {
 		equirect360Video(outdir, stamp, suffix)
+	}
+	if ok && withVertical() {
+		verticalVideo(outdir, stamp, suffix)
 	}
 	if !ok {
 		return fmt.Errorf("stitch failed for %s", route)

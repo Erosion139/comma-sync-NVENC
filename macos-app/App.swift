@@ -101,6 +101,8 @@ final class SyncRunner: ObservableObject {
         env["SECONDARY_CAM"] = ud.string(forKey: "secondaryCam") ?? "wide"
         env["TERTIARY_CAM"] = ud.string(forKey: "tertiaryCam") ?? "driver"
         env["WITH_360"] = ud.bool(forKey: "with360") ? "1" : "0"
+        env["WITH_VERTICAL"] = ud.bool(forKey: "withVertical") ? "1" : "0"
+        env["VERTICAL_DRIVER_POS"] = ud.string(forKey: "verticalDriverPos") ?? "bottom"
         p.environment = env
 
         let pipe = Pipe()
@@ -214,6 +216,8 @@ struct ContentView: View {
     @AppStorage("secondaryCam") private var secondaryCam = "wide"
     @AppStorage("tertiaryCam") private var tertiaryCam = "driver"
     @AppStorage("with360") private var with360 = false
+    @AppStorage("withVertical") private var withVertical = false
+    @AppStorage("verticalDriverPos") private var verticalDriverPos = "bottom"
     @StateObject private var runner = SyncRunner()
     @State private var showDrives = false
     @State private var drives: [Drive] = []
@@ -313,6 +317,25 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Toggle(isOn: $withVertical) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Also make a vertical phone video")
+                    Text("A portrait file made for phone screens — the wide cam (with the road cam sharpened over its center) stacked with the driver cam.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if withVertical {
+                HStack(spacing: 10) {
+                    Text("Driver cam").font(.caption2).foregroundStyle(.secondary)
+                    Picker("", selection: $verticalDriverPos) {
+                        Text("Bottom").tag("bottom")
+                        Text("Top").tag("top")
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 160)
+                    Spacer()
+                }
+                .padding(.leading, 2)
+            }
             Toggle(isOn: $autoUpdateCheck) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Automatically check for updates")
@@ -349,7 +372,7 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 936)
+        .frame(width: 580, height: 1010)
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }
