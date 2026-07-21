@@ -101,6 +101,8 @@ final class SyncRunner: ObservableObject {
         env["PRIMARY_CAM"] = ud.string(forKey: "primaryCam") ?? "road"
         env["SECONDARY_CAM"] = ud.string(forKey: "secondaryCam") ?? "wide"
         env["TERTIARY_CAM"] = ud.string(forKey: "tertiaryCam") ?? "driver"
+        let allFirst = (ud.object(forKey: "syncAllFirst") as? Bool) ?? true
+        env["SYNC_ORDER"] = allFirst ? "all-first" : "per-drive"
         env["WITH_360"] = ud.bool(forKey: "with360") ? "1" : "0"
         env["WITH_VERTICAL"] = ud.bool(forKey: "withVertical") ? "1" : "0"
         env["VERTICAL_DRIVER_POS"] = ud.string(forKey: "verticalDriverPos") ?? "bottom"
@@ -214,6 +216,7 @@ struct ContentView: View {
     @AppStorage("autoDelete") private var autoDelete = false
     @AppStorage("syncAudio") private var syncAudio = true
     @AppStorage("limitPower") private var limitPower = false
+    @AppStorage("syncAllFirst") private var syncAllFirst = true
     @AppStorage("autoUpdateCheck") private var autoUpdateCheck = true
     @AppStorage("withCombined") private var withCombined = false
     @AppStorage("primaryCam") private var primaryCam = "road"
@@ -300,6 +303,13 @@ struct ContentView: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Toggle(isOn: $syncAllFirst) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Download all drives first, then stitch")
+                    Text("Finishes every transfer while the comma is reachable, then renders afterwards. Off = stitch each drive right after it downloads.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Toggle(isOn: $withCombined) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text("Make a combined multi-angle video")
@@ -358,6 +368,12 @@ struct ContentView: View {
                         Label("Stop", systemImage: "stop.circle.fill").frame(maxWidth: .infinity)
                     }
                     .controlSize(.large).buttonStyle(.borderedProminent).tint(.red)
+                    // The index page stays reachable mid-sync — it shows live
+                    // per-drive progress and can queue nothing while running.
+                    Button(action: openDrives) {
+                        Label("Index Drives", systemImage: "list.bullet.rectangle")
+                    }
+                    .controlSize(.large)
                 } else {
                     // Index Drives is the one entry point: browse everything and pick
                     // what to download. Sync New lives on that page (the rarer path).
@@ -375,7 +391,7 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 1010)
+        .frame(width: 580, height: 1062)
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }

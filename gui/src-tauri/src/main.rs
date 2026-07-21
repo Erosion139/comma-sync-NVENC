@@ -33,7 +33,15 @@ struct Opts {
     tertiary: String,
     #[serde(default)]
     vr360: bool,
+    #[serde(default)]
+    vertical: bool,
+    #[serde(default)]
+    vertical_pos: String,
+    #[serde(default = "default_true")]
+    all_first: bool,
 }
+
+fn default_true() -> bool { true }
 
 /// Locate the core binary: $COMMA_SYNC_BIN, then next to this app, then PATH.
 fn core_bin() -> String {
@@ -76,6 +84,11 @@ fn core_command(opts: &Opts, args: &[&str]) -> Command {
         cmd.env("TERTIARY_CAM", &opts.tertiary);
     }
     cmd.env("WITH_360", if opts.vr360 { "1" } else { "0" });
+    cmd.env("WITH_VERTICAL", if opts.vertical { "1" } else { "0" });
+    if !opts.vertical_pos.is_empty() {
+        cmd.env("VERTICAL_DRIVER_POS", &opts.vertical_pos);
+    }
+    cmd.env("SYNC_ORDER", if opts.all_first { "all-first" } else { "per-drive" });
     cmd
 }
 

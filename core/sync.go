@@ -23,6 +23,10 @@ func cmdSync() error {
 		} else {
 			defer c.Close()
 			logf("==> Comma found at %s", host)
+			allFirst := syncAllFirst()
+			if allFirst {
+				logf("==> Downloading every new drive first; stitching starts after the transfers.")
+			}
 			for _, d := range listDeviceWith(c) {
 				if ledgerHas(d.Route) {
 					continue
@@ -39,23 +43,41 @@ func cmdSync() error {
 						Message: "download didn't finish — left for the next run: " + e.Error()})
 					continue // never stitch a partial drive
 				}
+				if allFirst {
+					continue // stitch later, once every transfer is done
+				}
 				if e := stitchRoute(d.Route, false); e != nil {
 					emit(ProgressEvent{Type: "error", Route: d.Route, Message: e.Error()})
 					continue
 				}
 				ledgerAdd(d.Route)
-				if cleanRaw() {
-					removeRouteChunks(d.Route)
-				}
+				maybeCleanChunks(d.Route)
 			}
 		}
 	}
 
-	// Stitch any complete local drives not handled above (e.g. no longer on the comma).
-	// Partially downloaded drives are skipped here too — never stitched half-finished.
+	// Stitch every complete, unprocessed local drive. In all-first mode this is where
+	// ALL the stitching happens (after the transfers); in per-drive mode it just picks
+	// up leftovers (e.g. drives no longer on the comma). Partially downloaded drives
+	// are skipped — never stitched half-finished.
 	stitchCompleteLocalUnprocessed()
 	emit(ProgressEvent{Type: "done", Message: "Done. Stitched drives are in: " + rootDir()})
 	return nil
+}
+
+// maybeCleanChunks deletes a route's raw chunks only when CLEAN_RAW is on AND the
+// stitched outputs are verified present/playable/complete — so the originals are never
+// thrown away before the videos that replace them are confirmed to exist.
+func maybeCleanChunks(route string) {
+	if !cleanRaw() {
+		return
+	}
+	if !stitchedOutputsOK(route) {
+		logf("      keeping raw chunks for %s — stitched outputs not verified yet", route)
+		return
+	}
+	removeRouteChunks(route)
+	logf("      raw chunks deleted for %s (outputs verified)", route)
 }
 
 func stitchCompleteLocalUnprocessed() {
@@ -72,9 +94,7 @@ func stitchCompleteLocalUnprocessed() {
 			continue
 		}
 		ledgerAdd(route)
-		if cleanRaw() {
-			removeRouteChunks(route)
-		}
+		maybeCleanChunks(route)
 	}
 }
 

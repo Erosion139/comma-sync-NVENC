@@ -28,6 +28,9 @@ function opts() {
     secondary: $("secondaryCam").value,
     tertiary: $("tertiaryCam").value,
     vr360: $("with360").checked,
+    vertical: $("withVertical").checked,
+    vertical_pos: $("verticalPos").value,
+    all_first: $("allFirst").checked,
   };
 }
 
@@ -220,6 +223,21 @@ for (const id of ["primaryCam", "secondaryCam", "tertiaryCam"]) {
 // ---- 360 VR video ----------------------------------------------------------
 $("with360").checked = localStorage.getItem("with360") === "1";
 $("with360").addEventListener("change", (e) => localStorage.setItem("with360", e.target.checked ? "1" : "0"));
+
+// ---- vertical phone video ---------------------------------------------------
+function syncVerticalUI() { $("verticalRoles").classList.toggle("hidden", !$("withVertical").checked); }
+$("withVertical").checked = localStorage.getItem("withVertical") === "1";
+$("verticalPos").value = localStorage.getItem("verticalPos") || "bottom";
+syncVerticalUI();
+$("withVertical").addEventListener("change", (e) => {
+  localStorage.setItem("withVertical", e.target.checked ? "1" : "0");
+  syncVerticalUI();
+});
+$("verticalPos").addEventListener("change", (e) => localStorage.setItem("verticalPos", e.target.value));
+
+// ---- sync order (default: download everything first) ------------------------
+$("allFirst").checked = localStorage.getItem("allFirst") !== "0";
+$("allFirst").addEventListener("change", (e) => localStorage.setItem("allFirst", e.target.checked ? "1" : "0"));
 
 // ---- update check -----------------------------------------------------------
 // On by default; the core reads only GitHub's public releases list (no data sent).

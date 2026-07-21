@@ -85,6 +85,15 @@
       <div class="divider"></div>
       <label class="toggle">
         <span class="tmeta">
+          <b>Download all drives first, then stitch</b>
+          <small>Finishes every transfer while the comma is reachable, then renders afterwards. Off = stitch each drive right after it downloads.</small>
+        </span>
+        <input type="checkbox" id="allFirst" checked />
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div class="divider"></div>
+      <label class="toggle">
+        <span class="tmeta">
           <b>Automatically check for updates</b>
           <small>Tells you when a newer version is on GitHub — only reads the public releases list, sends no data</small>
         </span>
@@ -114,6 +123,18 @@
         <input type="checkbox" id="with360" />
         <span class="switch" aria-hidden="true"></span>
       </label>
+      <div class="divider"></div>
+      <label class="toggle">
+        <span class="tmeta">
+          <b>Make a vertical phone video</b>
+          <small>A portrait file made for phone screens — the wide cam (with the road cam sharpened over its center) stacked with the driver cam.</small>
+        </span>
+        <input type="checkbox" id="withVertical" />
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div id="verticalRoles" class="roles hidden">
+        <label class="role">Driver cam<select id="verticalPos"><option value="bottom">Bottom</option><option value="top">Top</option></select></label>
+      </div>
     </section>
 
     <div class="actions">
