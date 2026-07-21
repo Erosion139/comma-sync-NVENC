@@ -29,17 +29,30 @@ func verticalVideo(outdir, stamp, suffix string) {
 	haveRoad := mp4OK(road)
 
 	pos := verticalDriverPos()
-	out := filepath.Join(outdir, stamp+"__vertical"+suffix+".mp4")
 	inputs := []string{wide, driver}
 	if haveRoad {
 		inputs = append(inputs, road)
 	}
-	if mp4OK(out) && outputFresh(out, inputs) {
-		// Note: like the 360, there's one vertical file per drive; flipping the
-		// driver-position option re-renders it on the next restitch only if the
-		// sources changed. (The file is small enough to just delete to force a redo.)
-		logf("      vertical already rendered — skipped re-encode: %s", filepath.Base(out))
-		return
+
+	// Position-aware, like the combined layouts: each vertical file is stamped with its
+	// driver position. Rendering with the OTHER position produces a second file
+	// ("__vertical (2).mp4") instead of skipping or overwriting, so you can have one of
+	// each in the drive's folder. A same-position file only re-renders if the source
+	// videos changed since it was made.
+	out := ""
+	existing, _ := filepath.Glob(filepath.Join(outdir, stamp+"__vertical*.mp4"))
+	for _, m := range existing {
+		if v, ok := mp4CommentTag(m, "csync-vertical="); ok && v == pos {
+			if outputFresh(m, inputs) {
+				logf("      vertical [driver %s] already rendered — skipped re-encode: %s", pos, filepath.Base(m))
+				return
+			}
+			out = m // stale same-position file — rebuild it in place
+			break
+		}
+	}
+	if out == "" {
+		out = freeVariantPath(outdir, stamp, "vertical")
 	}
 	part := out + ".part"
 	os.Remove(part)
@@ -72,7 +85,9 @@ func verticalVideo(outdir, stamp, suffix string) {
 	} else {
 		args = append(args, "-c:v", "libx264", "-preset", "veryfast", "-crf", "21", "-pix_fmt", "yuv420p")
 	}
-	args = append(args, "-c:a", "copy", "-movflags", "+faststart", "-f", "mp4", part)
+	// Stamp the driver position so a later run can tell which arrangement this file is.
+	args = append(args, "-c:a", "copy", "-movflags", "+faststart",
+		"-metadata", "comment=csync-vertical="+pos, "-f", "mp4", part)
 
 	if err := exec.Command("ffmpeg", args...).Run(); err != nil || !mp4OK(part) {
 		os.Remove(part)

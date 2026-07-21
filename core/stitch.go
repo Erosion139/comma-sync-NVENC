@@ -291,11 +291,12 @@ func combinedLayoutTag(path string) string {
 	return v
 }
 
-// freeCombinedPath returns the lowest-numbered combined output path in outdir that
-// doesn't exist yet ("__combined.mp4", then "__combined (2).mp4", ...), so a new layout
-// never overwrites an already-rendered combined with a different layout.
-func freeCombinedPath(outdir, stamp string) string {
-	base := filepath.Join(outdir, stamp+"__combined")
+// freeVariantPath returns the lowest-numbered output path of the given kind in outdir
+// that doesn't exist yet ("__<kind>.mp4", then "__<kind> (2).mp4", ...), so a new
+// variant (a different combined layout, a different vertical arrangement) never
+// overwrites an already-rendered file of the same kind.
+func freeVariantPath(outdir, stamp, kind string) string {
+	base := filepath.Join(outdir, stamp+"__"+kind)
 	if _, err := os.Stat(base + ".mp4"); os.IsNotExist(err) {
 		return base + ".mp4"
 	}
@@ -365,7 +366,7 @@ func combineVideo(outdir, stamp, suffix string) {
 	}
 
 	if out == "" {
-		out = freeCombinedPath(outdir, stamp)
+		out = freeVariantPath(outdir, stamp, "combined")
 	}
 	part := out + ".part"
 	os.Remove(part)
