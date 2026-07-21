@@ -33,12 +33,15 @@ final class SyncRunner: ObservableObject {
     @Published var progress: Double? = nil
     @Published var statusLine = ""
     @Published var rateMBps: Double? = nil
+    @Published var batchLabel = ""
     @Published var currentRoute: String? = nil
     @Published var batchRoutes: [String] = []
     @Published var doneRoutes: Set<String> = []
     @Published var failedRoutes: Set<String> = []
 
     private var proc: Process?
+    private var routeCount = 0
+    private var twoPhase = false
     private var pending: [Job] = []
     private var cancelled = false
     private var cfg: (out: String, chunks: String, del: Bool, audio: Bool, limit: Bool, script: String)?
@@ -49,7 +52,16 @@ final class SyncRunner: ObservableObject {
     }
     func startBatch(routes: [String], output: String, chunks: String, autoDelete: Bool,
                     syncAudio: Bool, limitPower: Bool, script: String) {
-        begin(jobs: routes.map { Job(route: $0, args: ["restitch", $0]) }, routes: routes,
+        // With "download all drives first" on, run the batch in two phases: every
+        // drive's transfer first, then the stitches. Otherwise each drive downloads
+        // and stitches before moving to the next (restitch does both).
+        let allFirst = (UserDefaults.standard.object(forKey: "syncAllFirst") as? Bool) ?? true
+        var jobs: [Job] = []
+        if allFirst && routes.count > 1 {
+            jobs += routes.map { Job(route: $0, args: ["download", $0]) }
+        }
+        jobs += routes.map { Job(route: $0, args: ["restitch", $0]) }
+        begin(jobs: jobs, routes: routes,
               output: output, chunks: chunks, autoDelete: autoDelete, syncAudio: syncAudio, limitPower: limitPower, script: script)
     }
 
@@ -65,6 +77,9 @@ final class SyncRunner: ObservableObject {
         batchTotal = jobs.count
         batchDone = 0
         batchRoutes = routes
+        routeCount = routes.count
+        twoPhase = routes.count > 1 && jobs.count > routes.count
+        batchLabel = ""
         doneRoutes = []
         failedRoutes = []
         progress = nil
@@ -85,6 +100,14 @@ final class SyncRunner: ObservableObject {
         currentRoute = job.route
         progress = nil
         statusLine = ""
+        if routeCount > 1 {
+            let downloading = (job.args.first == "download")
+            let idx = downloading ? batchDone + 1
+                                  : (twoPhase ? batchDone + 1 - routeCount : batchDone + 1)
+            batchLabel = "\(downloading ? "Downloading" : "Stitching") \(min(max(idx, 1), routeCount)) of \(routeCount)"
+        } else {
+            batchLabel = ""
+        }
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: cfg.script)   // the bundled Go core binary
@@ -121,8 +144,12 @@ final class SyncRunner: ObservableObject {
             let ok = (pr.terminationStatus == 0)
             DispatchQueue.main.async {
                 guard let self = self else { return }
-                if let r = job.route, !self.cancelled {
+                // A download-phase job finishing doesn't mean the drive is done —
+                // only the stitch pass marks it Synced.
+                if let r = job.route, !self.cancelled, job.args.first != "download" {
                     if ok { self.doneRoutes.insert(r) } else { self.failedRoutes.insert(r) }
+                } else if let r = job.route, !self.cancelled, !ok {
+                    self.failedRoutes.insert(r)
                 }
                 self.batchDone += 1
                 self.currentRoute = nil
@@ -391,7 +418,10 @@ struct ContentView: View {
             logView
         }
         .padding(22)
-        .frame(width: 580, height: 1062)
+        // Width is fixed; height hugs the content so the window grows/shrinks as the
+        // conditional option rows (combined roles, vertical driver position) appear —
+        // the log keeps its minimum height instead of getting crushed.
+        .frame(width: 580)
         .onAppear {
             setDefaults()
             if drives.isEmpty { drives = loadCachedDrives() }
@@ -421,9 +451,8 @@ struct ContentView: View {
 
     private var progressBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            if runner.batchTotal > 1 {
-                Text("Drive \(min(runner.batchDone + 1, runner.batchTotal)) of \(runner.batchTotal)")
-                    .font(.caption).foregroundStyle(.secondary)
+            if !runner.batchLabel.isEmpty {
+                Text(runner.batchLabel).font(.caption).foregroundStyle(.secondary)
             }
             if let p = runner.progress {
                 ProgressView(value: p)

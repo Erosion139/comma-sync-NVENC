@@ -98,6 +98,37 @@ func stitchCompleteLocalUnprocessed() {
 	}
 }
 
+// cmdDownload fetches one drive's chunks (resiliently, verified complete) WITHOUT
+// stitching — the UIs use it to run a batch in two phases when "download all first"
+// is on: every drive transfers while the comma is reachable, then the restitches run.
+func cmdDownload(route string) error {
+	defer keepAwake()()
+	sweepStaleTemps()
+
+	if host, port, cleanup, err := target(); err == nil {
+		defer cleanup()
+		onDev := false
+		if c, derr := dial(host, port, 12*time.Second); derr == nil {
+			onDev = routeOnDevice(c, route)
+			c.Close()
+		}
+		if onDev {
+			logf("==> Downloading %s", route)
+			if e := pullRouteResilient(route, host, port); e != nil && !localRouteLooksComplete(route) {
+				return fmt.Errorf("couldn't finish downloading %s: %w", route, e)
+			}
+		}
+	}
+	if len(localSegs(route)) == 0 {
+		return fmt.Errorf("no local chunks for %s and the comma isn't reachable", route)
+	}
+	if !localRouteLooksComplete(route) {
+		return fmt.Errorf("%s is only partially downloaded — connect the comma and try again", route)
+	}
+	emit(ProgressEvent{Type: "log", Route: route, Message: "==> " + route + " downloaded — stitching runs after all transfers"})
+	return nil
+}
+
 // cmdRestitch re-processes one drive. It first tries to (re)fetch from the comma to fill
 // any gaps — this is what lets a partially-synced drive recover instead of being stuck.
 // It refuses to stitch a drive that's still incomplete and can't be finished, rather

@@ -17,6 +17,7 @@ Usage:
   comma-sync list [--json]          List drives on this computer + still on the comma
   comma-sync sync [--json]          Download new drives and stitch them
   comma-sync restitch <route> [--json]   Re-stitch one drive (re-downloads if needed)
+  comma-sync download <route> [--json]   Download one drive's chunks only (no stitch)
   comma-sync update-check [--json]  Check GitHub for a newer release
   comma-sync version
 
@@ -85,6 +86,15 @@ func main() {
 			os.Exit(2)
 		}
 		if err := cmdRestitch(positional[0]); err != nil {
+			fail(err)
+		}
+
+	case "download":
+		if len(positional) == 0 {
+			fmt.Fprintln(os.Stderr, "usage: comma-sync download <route>")
+			os.Exit(2)
+		}
+		if err := cmdDownload(positional[0]); err != nil {
 			fail(err)
 		}
 

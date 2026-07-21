@@ -131,7 +131,14 @@ $("restitchSelected").addEventListener("click", () => batch(selectedRoutes()));
 function batch(routes) {
   if (!routes.length) return;
   $("sheet").classList.add("hidden");
-  runQueue(routes.map((r) => ["restitch", r]));     // one restitch per drive, sequential
+  // With "download all drives first" on, transfer every drive before any stitching,
+  // then run the stitches. Otherwise restitch does download+stitch per drive.
+  const jobs = [];
+  if ($("allFirst").checked && routes.length > 1) {
+    jobs.push(...routes.map((r) => ["download", r]));
+  }
+  jobs.push(...routes.map((r) => ["restitch", r]));
+  runQueue(jobs);
 }
 
 // ---- indexing sheet ---------------------------------------------------------
