@@ -86,11 +86,12 @@ listen("core-event", (e) => {
   switch (ev.type) {
     case "progress": {
       const pct = Math.round(ev.percent || 0);
+      const rate = ev.rateMBps > 0 ? " · " + ev.rateMBps.toFixed(1) + " MB/s" : "";
       $("progFill").style.width = pct + "%";
-      $("progPct").textContent = pct + "%";
+      $("progPct").textContent = pct + "%" + rate;
       $("progStatus").textContent = (ev.phase || "") + (ev.route ? " · " + ev.route : "");
       if (ev.phase === "stitch") updateRow(ev.route, "Stitching…", null);
-      else updateRow(ev.route, pct + "%", pct);
+      else updateRow(ev.route, pct + "%" + rate, pct);
       break;
     }
     case "drive": logLine("==> " + ev.message); break;
@@ -177,7 +178,8 @@ function updateRow(route, text, pct) {
   if (!row) return;
   const st = row.querySelector(".status");
   if (pct != null && pct < 100) {
-    st.innerHTML = `<span class="minibar"><i style="width:${pct}%"></i></span> ${pct}%`;
+    st.innerHTML = `<span class="minibar"><i style="width:${pct}%"></i></span> `;
+    st.append(text); // e.g. "42% · 5.8 MB/s" — append as text, never HTML
   } else {
     st.textContent = text;
   }

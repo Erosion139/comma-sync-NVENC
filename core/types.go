@@ -14,9 +14,10 @@ type Drive struct {
 // ProgressEvent is the structured stream `sync` will emit (one JSON object per line)
 // so GUIs never have to parse human text. Used once sync/restitch are implemented.
 type ProgressEvent struct {
-	Type    string  `json:"type"`              // progress | log | drive | done | error
-	Route   string  `json:"route,omitempty"`
-	Phase   string  `json:"phase,omitempty"`   // download | stitch
-	Percent float64 `json:"percent,omitempty"`
-	Message string  `json:"message,omitempty"`
+	Type     string  `json:"type"`               // progress | log | drive | done | error
+	Route    string  `json:"route,omitempty"`
+	Phase    string  `json:"phase,omitempty"`    // download | stitch
+	Percent  float64 `json:"percent,omitempty"`
+	RateMBps float64 `json:"rateMBps,omitempty"` // live download throughput (smoothed)
+	Message  string  `json:"message,omitempty"`
 }

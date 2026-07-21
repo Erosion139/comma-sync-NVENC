@@ -55,6 +55,11 @@ func removeRouteChunks(route string) {
 
 // routeStamp = earliest hevc mtime across the route's segments (recording start).
 func routeStamp(route string, segs []string) string {
+	// A pinned stamp (from the comma's listing, or an earlier stitch) always wins, so
+	// output folders and the index agree and never drift with local file mtimes.
+	if s := recordedStamp(route); s != "" {
+		return s
+	}
 	var earliest int64 = 1 << 62
 	for _, s := range segs {
 		files, _ := os.ReadDir(filepath.Join(chunksDir(), s))
@@ -69,7 +74,9 @@ func routeStamp(route string, segs []string) string {
 		}
 	}
 	if earliest < (1 << 62) {
-		return stampFromEpoch(earliest)
+		s := stampFromEpoch(earliest)
+		recordStamp(route, s) // pin it so every later list/stitch reuses this exact time
+		return s
 	}
 	return route
 }
