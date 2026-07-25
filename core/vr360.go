@@ -42,9 +42,19 @@ func equirect360Video(outdir, stamp, suffix string) {
 	rs := even(2048 * a.scale)
 	rx := 1024 + int(a.x*2048/1928+0.5)
 	ry := int(a.y*2048/1208 + 0.5)
+	// The audio travels with the ROAD camera (qcamera.ts is the road view), so the road
+	// is the reference and the other two move onto its timeline. Shifting the road
+	// instead would leave the sound trailing the picture.
+	wideShift, drvShift := "", ""
+	if lag := camLagSecs(road, wide, "road", "wide"); lag != 0 {
+		wideShift = fmt.Sprintf("setpts=PTS-%.4f/TB,", lag)
+	}
+	if lag := camLagSecs(road, driver, "road", "driver"); lag != 0 {
+		drvShift = fmt.Sprintf("setpts=PTS-%.4f/TB,", lag)
+	}
 	fc := "color=c=black:s=4096x2048:r=" + fps() + "[bg];" +
-		"[0:v]scale=2048:2048[front];" + // wide -> front hemisphere
-		"[1:v]scale=2048:2048,split[dv1][dv2];" + // driver -> rear (split so it wraps the seam)
+		"[0:v]" + wideShift + "scale=2048:2048[front];" + // wide -> front hemisphere
+		"[1:v]" + drvShift + "scale=2048:2048,split[dv1][dv2];" + // driver -> rear (split so it wraps the seam)
 		"[dv1]crop=1024:2048:0:0[rearL];" +
 		"[dv2]crop=1024:2048:1024:0[rearR];" +
 		fmt.Sprintf("[2:v]scale=%d:%d[roadhi];", rs, rs) + // road -> sharp center overlay
@@ -70,7 +80,7 @@ func equirect360Video(outdir, stamp, suffix string) {
 	// grow it without shifting mdat (which would invalidate the sample chunk offsets).
 	args = append(args, "-c:a", "copy", "-f", "mp4", part)
 
-	if err := runFFmpegProgress(args, mp4Duration(wide), "360 video"); err != nil || !mp4OK(part) {
+	if err := runFFmpegProgress(args, mp4Duration(wide), 0, "360 video"); err != nil || !mp4OK(part) {
 		os.Remove(part)
 		emit(ProgressEvent{Type: "error", Message: "360 video failed for " + stamp})
 		return

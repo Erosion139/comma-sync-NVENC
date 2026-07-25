@@ -17,7 +17,7 @@ func envOr(k, d string) string {
 	return d
 }
 
-func rootDir() string  { return envOr("ROOT", "Comma Footage") }
+func rootDir() string { return envOr("ROOT", "Comma Footage") }
 func chunksDir() string {
 	if v := os.Getenv("CHUNKS_DIR"); v != "" {
 		return v
@@ -46,6 +46,23 @@ func syncAllFirst() bool { return envOr("SYNC_ORDER", "all-first") != "per-drive
 // Vertical phone-format video: wide + driver stacked portrait, road overlaid sharp on
 // the wide. VERTICAL_DRIVER_POS chooses which pane the driver cam takes (bottom|top).
 func withVertical() bool { return os.Getenv("WITH_VERTICAL") == "1" }
+
+// roadFeather is how many pixels the road overlay fades out over at its edges.
+//
+// DEFAULT 0 = hard edge, the original behavior. Any blend makes both cameras partly
+// visible inside the band, and since a nearby object sits at a different place in each
+// one, it can appear twice there. Blending is therefore opt-in via VERTICAL_FEATHER
+// rather than something applied to everyone's footage by default.
+func roadFeather() int {
+	n := 0
+	if v, err := strconv.Atoi(os.Getenv("VERTICAL_FEATHER")); err == nil && v >= 0 {
+		n = v
+	}
+	if n > 40 {
+		n = 40
+	}
+	return n
+}
 func verticalDriverPos() string {
 	if os.Getenv("VERTICAL_DRIVER_POS") == "top" {
 		return "top"

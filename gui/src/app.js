@@ -93,10 +93,12 @@ listen("core-event", (e) => {
       $("progFill").style.width = pct + "%";
       $("progPct").textContent = pct + "%" + rate;
       $("progStatus").textContent =
-        (ev.phase === "render" ? "Rendering " + (ev.message || "video") : (ev.phase || "")) +
+        (ev.phase === "render" ? "Rendering " + (ev.message || "video")
+          : ev.phase === "analyze" ? (ev.message || "Analyzing")
+          : (ev.phase || "")) +
         (ev.route ? " · " + ev.route : "");
       if (ev.phase === "stitch") updateRow(ev.route, "Stitching…", null);
-      else if (ev.phase === "render") updateRow(ev.route, pct + "%", pct);
+      else if (ev.phase === "render" || ev.phase === "analyze") updateRow(ev.route, pct + "%", pct);
       else updateRow(ev.route, pct + "%" + rate, pct);
       break;
     }

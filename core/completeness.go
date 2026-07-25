@@ -17,9 +17,13 @@ func mp4CommentTag(path, prefix string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	s := strings.TrimSpace(string(out))
-	if strings.HasPrefix(s, prefix) {
-		return strings.TrimPrefix(s, prefix), true
+	// The comment may carry several ";"-separated fields (e.g.
+	// "csync-vertical=bottom;csync-render=2"); match any of them. A single-field
+	// comment written by an older version still works.
+	for _, f := range strings.Split(strings.TrimSpace(string(out)), ";") {
+		if f = strings.TrimSpace(f); strings.HasPrefix(f, prefix) {
+			return strings.TrimPrefix(f, prefix), true
+		}
 	}
 	return "", false
 }

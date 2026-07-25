@@ -166,6 +166,12 @@ final class SyncRunner: ObservableObject {
                     progress = nil
                     rateMBps = nil
                     statusLine = "Stitching video…"
+                } else if ev.phase == "analyze" {
+                    // Measuring camera alignment/timing before the encode — its own step,
+                    // so the message reads on its own rather than as "Rendering …".
+                    rateMBps = nil
+                    progress = (ev.percent ?? 0) / 100.0
+                    statusLine = (ev.message ?? "Analyzing") + "…"
                 } else if ev.phase == "render" {
                     // A long re-encode (combined / 360 / vertical). These can run for many
                     // minutes on a multi-hour drive, so show real percent — with no bar at

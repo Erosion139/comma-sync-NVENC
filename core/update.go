@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const coreVersion = "1.2.1"
+const coreVersion = "1.2.2"
 
 // Default repo to check. Forks can override with --repo owner/name.
 const defaultRepo = "sourylime/comma-sync"
@@ -32,10 +32,11 @@ type updateResult struct {
 }
 
 // cmdUpdateCheck parses its own flags from the raw arg list:
-//   --current X.Y.Z   version to compare against (default: this core's version)
-//   --repo owner/name (default: sourylime/comma-sync)
-//   --prefix gui-v    only consider releases whose tag starts with this
-//   --prereleases     include pre-releases (the GUI beta lives in these)
+//
+//	--current X.Y.Z   version to compare against (default: this core's version)
+//	--repo owner/name (default: sourylime/comma-sync)
+//	--prefix gui-v    only consider releases whose tag starts with this
+//	--prereleases     include pre-releases (the GUI beta lives in these)
 func cmdUpdateCheck(args []string) {
 	repo := defaultRepo
 	prefix := ""

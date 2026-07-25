@@ -180,7 +180,12 @@ func calibrateRoadOverlayUncached(widePath, roadPath string) roadAlign {
 		}
 	}
 	var xs, ys, fs []float64
-	for _, frac := range []float64{0.25, 0.5, 0.75} {
+	fracs := []float64{0.25, 0.5, 0.75}
+	for i, frac := range fracs {
+		// Each match decodes a frame and searches over scale/offset — report it so the
+		// bar keeps moving instead of stalling before the encode starts.
+		emit(ProgressEvent{Type: "progress", Route: curRoute, Phase: "analyze",
+			Percent: float64(i) / float64(len(fracs)) * 100, Message: "Aligning road overlay"})
 		a, score := matchOne(widePath, roadPath, dur*frac)
 		if score < 0.15 { // weak/failed match — ignore this frame
 			continue

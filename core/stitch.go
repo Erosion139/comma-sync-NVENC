@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,20 +59,19 @@ func routeStamp(route string, segs []string) string {
 	if s := recordedStamp(route); s != "" {
 		return s
 	}
-	var earliest int64 = 1 << 62
+	var mtimes []int64
 	for _, s := range segs {
 		files, _ := os.ReadDir(filepath.Join(chunksDir(), s))
 		for _, f := range files {
 			if strings.HasSuffix(f.Name(), ".hevc") {
 				if info, err := f.Info(); err == nil {
-					if mt := info.ModTime().Unix(); mt < earliest {
-						earliest = mt
-					}
+					mtimes = append(mtimes, info.ModTime().Unix())
 				}
 			}
 		}
 	}
-	if earliest < (1 << 62) {
+	// Skip a pre-clock-sync first segment so the folder isn't dated months early.
+	if earliest := earliestSaneMtime(mtimes); earliest > 0 {
 		s := stampFromEpoch(earliest)
 		recordStamp(route, s) // pin it so every later list/stitch reuses this exact time
 		return s
@@ -121,22 +119,34 @@ func collisionSuffix(outdir, stamp string, cams []string) string {
 	}
 }
 
-func concatFiles(dir string, segs []string, fname, pattern string) (string, bool, error) {
-	tmp, err := os.CreateTemp("", pattern)
-	if err != nil {
-		return "", false, err
+// angleSpread returns how far apart the per-camera videos are in length, plus the
+// longest and shortest labels. Equal length is what keeps every angle showing the same
+// instant; a gap means the composites will drift.
+func angleSpread(outdir, stamp, suffix string, cams []string) (spread float64, longest, shortest string) {
+	type ad struct {
+		lbl string
+		dur float64
 	}
-	any := false
-	for _, s := range segs {
-		p := filepath.Join(dir, s, fname)
-		if f, err := os.Open(p); err == nil {
-			_, _ = io.Copy(tmp, f)
-			f.Close()
-			any = true
+	var ds []ad
+	for _, c := range cams {
+		p := filepath.Join(outdir, stamp+"__"+labelFor(c)+suffix+".mp4")
+		if v := mp4Duration(p); v > 0 {
+			ds = append(ds, ad{labelFor(c), v})
 		}
 	}
-	tmp.Close()
-	return tmp.Name(), any, nil
+	if len(ds) < 2 {
+		return 0, "", ""
+	}
+	lo, hi := ds[0], ds[0]
+	for _, x := range ds {
+		if x.dur < lo.dur {
+			lo = x
+		}
+		if x.dur > hi.dur {
+			hi = x
+		}
+	}
+	return hi.dur - lo.dur, hi.lbl, lo.lbl
 }
 
 // mp4OK reports whether an MP4 is finished and playable. An interrupted render (e.g.
@@ -173,9 +183,64 @@ func fpsFloat() float64 {
 	return 20
 }
 
+// micGapSecs returns how long after the camera the microphone started in this segment,
+// read from qcamera.ts (audio stream start minus video stream start). 0 when they start
+// together, when either stream is missing, or when the value is implausible. Sub-10ms
+// differences are treated as zero — that's timestamp noise, not a real gap.
+func micGapSecs(qts string) float64 {
+	out, err := exec.Command("ffprobe", "-v", "error",
+		"-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0", qts).Output()
+	if err != nil {
+		return 0
+	}
+	var vs, as float64
+	haveV, haveA := false, false
+	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		f := strings.Split(strings.TrimSpace(ln), ",")
+		if len(f) < 2 {
+			continue
+		}
+		v, e := strconv.ParseFloat(f[1], 64)
+		if e != nil {
+			continue
+		}
+		switch f[0] {
+		case "video":
+			if !haveV {
+				vs, haveV = v, true
+			}
+		case "audio":
+			if !haveA {
+				as, haveA = v, true
+			}
+		}
+	}
+	if !haveV || !haveA {
+		return 0
+	}
+	switch g := as - vs; {
+	case g < 0.01:
+		return 0 // together (or audio marginally first) — nothing to re-insert
+	case g > 30:
+		return 0 // implausible; don't shove the whole segment into silence
+	default:
+		return g
+	}
+}
+
 // segFirstHEVC returns a camera .hevc filename present in a segment (any camera —
 // they share the same frame count), or "" if the segment has none.
 func segFirstHEVC(segPath string) string {
+	// Prefer the ROAD camera: the microphone is recorded alongside it (qcamera.ts is the
+	// road view), so the road defines the audio's timeline. Reading the directory order
+	// instead picked dcamera.hevc — the driver — and any per-segment frame difference
+	// between the driver and the camera being muxed accumulated segment after segment
+	// into audible drift.
+	for _, cam := range []string{"fcamera.hevc", "ecamera.hevc", "dcamera.hevc"} {
+		if fi, err := os.Stat(filepath.Join(segPath, cam)); err == nil && fi.Size() > 0 {
+			return cam
+		}
+	}
 	files, _ := os.ReadDir(segPath)
 	for _, f := range files {
 		if strings.HasSuffix(f.Name(), ".hevc") {
@@ -191,19 +256,28 @@ func segFirstHEVC(segPath string) string {
 // (aresample fills the gap with silence) and fit to that segment's exact video
 // length, so audio and video realign at every segment boundary instead of drifting.
 // Segments with no audio get silence. Returns the PCM path ("" if no audio) + its dur.
-func buildAudioPCM(dir string, segs []string) (string, float64) {
+func buildAudioPCM(dir string, segs []string, ref map[string]int) (string, float64) {
 	out, err := os.CreateTemp("", "comma_aud_*.pcm")
 	if err != nil {
 		return "", 0
 	}
 	hadAudio := false
-	for _, s := range segs {
+	for i, s := range segs {
+		// One ffmpeg decode per segment — on a long drive this is a slow, silent pass, so
+		// report it as its own progress phase instead of leaving the bar blank.
+		emit(ProgressEvent{Type: "progress", Route: curRoute, Phase: "render",
+			Percent: float64(i) / float64(len(segs)) * 100, Message: "audio track"})
 		segPath := filepath.Join(dir, s)
-		hevc := segFirstHEVC(segPath)
-		if hevc == "" {
-			continue
+		// Use the SAME per-segment length the VIDEO was built to. Where a camera's chunk
+		// was missing, the video got frozen frames to fill the gap — so measuring one
+		// camera's real frames here would make the audio shorter than the picture, and
+		// everything after that gap would slide progressively out of sync.
+		frames := 0
+		if r, ok := ref[s]; ok && r > 0 {
+			frames = r
+		} else if hevc := segFirstHEVC(segPath); hevc != "" {
+			frames = countPackets(filepath.Join(segPath, hevc))
 		}
-		frames := countPackets(filepath.Join(segPath, hevc))
 		if frames <= 0 {
 			continue
 		}
@@ -212,21 +286,35 @@ func buildAudioPCM(dir string, segs []string) (string, float64) {
 		var wrote int64
 		qts := filepath.Join(segPath, "qcamera.ts")
 		if _, err := os.Stat(qts); err == nil {
+			// The mic can start AFTER the camera in a segment. "first_pts=0" below
+			// normalizes the decoded audio to start at zero, which on its own would
+			// DELETE that gap and make the sound run ahead of the picture. So measure
+			// the gap and re-insert it as leading silence, keeping the segment's total
+			// length identical.
+			gap := micGapSecs(qts)
+			gapBytes := int64(gap*float64(audioRate)+0.5) * 2
+			if gapBytes > tbytes {
+				gapBytes = tbytes
+			}
+			if gapBytes > 0 {
+				out.Write(make([]byte, gapBytes))
+				wrote += gapBytes
+			}
 			tmp, _ := os.CreateTemp("", "comma_seg_*.pcm")
 			tmpName := tmp.Name()
 			tmp.Close()
 			cmd := exec.Command("ffmpeg", "-y", "-v", "error", "-i", qts,
 				"-map", "0:a:0", "-af", "aresample=async=1:first_pts=0,apad",
-				"-t", fmt.Sprintf("%.4f", segDur), "-ar", strconv.Itoa(audioRate),
+				"-t", fmt.Sprintf("%.4f", segDur-gap), "-ar", strconv.Itoa(audioRate),
 				"-ac", "1", "-f", "s16le", tmpName)
 			if cmd.Run() == nil {
 				if data, err := os.ReadFile(tmpName); err == nil && len(data) > 0 {
 					hadAudio = true
-					if int64(len(data)) > tbytes {
-						data = data[:tbytes]
+					if int64(len(data)) > tbytes-wrote {
+						data = data[:tbytes-wrote]
 					}
 					out.Write(data)
-					wrote = int64(len(data))
+					wrote += int64(len(data))
 				}
 			}
 			os.Remove(tmpName)
@@ -250,36 +338,47 @@ func buildAudioPCM(dir string, segs []string) (string, float64) {
 // Renders to a ".part" temp and renames into place only once ffmpeg succeeds AND the
 // result is verifiably playable, so an interrupted/failed render never leaves a broken
 // file at the final path (later runs would otherwise mistake it for a finished video).
-func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string, segCount int) error {
+func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string, segCount int, label string) error {
 	part := out + ".part"
 	os.Remove(part)
 	// Stamp how many segments this was stitched from, so a later reuse check can tell
 	// whether the drive has since had more downloaded (a stale/partial output).
 	segTag := "comment=csync-segs=" + strconv.Itoa(segCount)
-	var cmd *exec.Cmd
+	// Total length so the muxing shows a live percentage. Even though the video is a
+	// stream copy (fast), a big drive still takes real time to write, and without a bar
+	// this first pass looked frozen to the user.
+	nframes := countPackets(combinedHEVC)
+	vsecs := float64(nframes) / fpsFloat()
+	var args []string
 	if audioPCM == "" {
-		cmd = exec.Command("ffmpeg", "-y", "-loglevel", "error",
+		args = []string{"-y", "-loglevel", "error",
 			"-framerate", fps(), "-i", combinedHEVC, "-c", "copy", "-tag:v", "hvc1",
-			"-metadata", segTag, "-f", "mp4", part)
+			"-metadata", segTag, "-f", "mp4", part}
 	} else {
-		vdur := float64(countPackets(combinedHEVC)) / fpsFloat()
-		tempo := 1.0
-		if vdur > 0 {
-			if tempo = audioDur / vdur; tempo < 0.5 {
-				tempo = 0.5
-			} else if tempo > 2.0 {
-				tempo = 2.0
-			}
+		// NO time-stretching. The PCM is built segment by segment in lockstep with the
+		// video, so it is already aligned all the way through. Stretching it to make the
+		// totals match (the old atempo) spreads any small total difference across the
+		// WHOLE drive as a rate error — sound that starts in sync and slides further
+		// behind the longer you watch. Instead pad with silence / cut at the very END,
+		// where a small residual is inaudible and cannot accumulate.
+		if d := audioDur - vsecs; d > 1.0 || d < -1.0 {
+			logf("      note: audio track is %+.1fs vs this camera's video — padded/trimmed at the end (never stretched)", d)
 		}
-		cmd = exec.Command("ffmpeg", "-y", "-loglevel", "error",
+		// Match the PCM to this camera's exact video length by cutting or adding silence
+		// at the END. Done here in Go rather than with an ffmpeg filter so the result is
+		// exact and predictable.
+		pcm, cleanup := fitPCM(audioPCM, int64(vsecs*float64(audioRate)+0.5)*2)
+		if cleanup != nil {
+			defer cleanup()
+		}
+		args = []string{"-y", "-loglevel", "error",
 			"-framerate", fps(), "-i", combinedHEVC,
-			"-f", "s16le", "-ar", strconv.Itoa(audioRate), "-ac", "1", "-i", audioPCM,
+			"-f", "s16le", "-ar", strconv.Itoa(audioRate), "-ac", "1", "-i", pcm,
 			"-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy",
-			"-filter:a", fmt.Sprintf("atempo=%.6f", tempo),
 			"-c:a", "aac", "-b:a", "96k", "-tag:v", "hvc1",
-			"-metadata", segTag, "-f", "mp4", part)
+			"-metadata", segTag, "-f", "mp4", part}
 	}
-	if err := cmd.Run(); err != nil {
+	if err := runFFmpegProgress(args, vsecs, nframes, label); err != nil {
 		os.Remove(part)
 		return err
 	}
@@ -397,7 +496,7 @@ func combineVideo(outdir, stamp, suffix string) {
 	// Stamp the layout so a later run can tell what's in this file without re-parsing it.
 	args = append(args, "-c:a", "copy", "-movflags", "+faststart",
 		"-metadata", "comment=csync-layout="+layout, "-f", "mp4", part)
-	if err := runFFmpegProgress(args, mp4Duration(inputs[0]), "combined video"); err != nil || !mp4OK(part) {
+	if err := runFFmpegProgress(args, mp4Duration(inputs[0]), 0, "combined video"); err != nil || !mp4OK(part) {
 		os.Remove(part)
 		emit(ProgressEvent{Type: "error", Message: "combined video failed for " + stamp})
 		return
@@ -432,6 +531,12 @@ func stitchRoute(route string, collision bool) error {
 		return err
 	}
 
+	// Work out where any camera's chunks are missing or short. Those stretches get
+	// frozen frames rather than being skipped, so every angle stays the same length and
+	// the composites never show the two views at different moments.
+	fillRef, fillHave, gaps := planFills(segs, cams)
+	reportGaps(gaps)
+
 	// If the per-camera videos are already in the output folder, reuse them: don't
 	// re-stitch the individuals, just let combineVideo decide about the combined. It
 	// renders one only if a combined with the CURRENT layout isn't already present, so
@@ -460,6 +565,16 @@ func stitchRoute(route string, collision bool) error {
 				break
 			}
 		}
+		// Refuse to reuse angles that are already out of step with each other — that's
+		// what makes a composite show the same moment twice. Re-stitching them is the
+		// only way to fix it, so fall through and rebuild.
+		if allExist {
+			if spread, long, short := angleSpread(outdir, stamp, "", cams); spread > 0.5 {
+				logf("      existing angles are %.1fs apart (%s vs %s) — re-stitching them so the composites line up",
+					spread, long, short)
+				allExist = false
+			}
+		}
 		if allExist {
 			logf("==> %s: individual videos already exist — checking extra outputs", stamp)
 			if withCombined() {
@@ -483,23 +598,23 @@ func stitchRoute(route string, collision bool) error {
 
 	audioPCM, audioDur := "", 0.0
 	if withAudio() {
-		if audioPCM, audioDur = buildAudioPCM(dir, segs); audioPCM != "" {
+		if audioPCM, audioDur = buildAudioPCM(dir, segs, fillRef); audioPCM != "" {
 			defer os.Remove(audioPCM)
 		}
 	}
 
 	ok := true
-	for _, cam := range cams {
+	for i, cam := range cams {
 		lbl := labelFor(cam)
 		out := filepath.Join(outdir, stamp+"__"+lbl+suffix+".mp4")
-		combined, _, err := concatFiles(dir, segs, cam, "comma_*.hevc")
+		combined, err := concatCameraFilled(dir, segs, cam, fillRef, fillHave)
 		if err != nil {
-			emit(ProgressEvent{Type: "error", Route: route, Message: "concat failed for " + lbl})
+			emit(ProgressEvent{Type: "error", Route: route, Message: "concat failed for " + lbl + ": " + err.Error()})
 			ok = false
 			continue
 		}
-		emit(ProgressEvent{Type: "progress", Route: route, Phase: "stitch", Percent: 0})
-		if err := muxCamera(combined, audioPCM, audioDur, out, len(segs)); err != nil {
+		label := fmt.Sprintf("%s video (%d/%d)", lbl, i+1, len(cams))
+		if err := muxCamera(combined, audioPCM, audioDur, out, len(segs), label); err != nil {
 			emit(ProgressEvent{Type: "error", Route: route, Message: "ffmpeg failed for " + lbl})
 			ok = false
 		} else {
@@ -510,6 +625,12 @@ func stitchRoute(route string, collision bool) error {
 			logf("      %s%s: %s", lbl, tag, filepath.Base(out))
 		}
 		os.Remove(combined)
+	}
+	if ok {
+		if spread, long, short := angleSpread(outdir, stamp, suffix, cams); spread > 0.5 {
+			logf("      !! angles came out %.1fs apart (%s longer than %s) — composites may drift",
+				spread, long, short)
+		}
 	}
 	if ok && withCombined() {
 		combineVideo(outdir, stamp, suffix)

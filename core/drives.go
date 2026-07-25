@@ -109,7 +109,7 @@ func listLocal() []Drive {
 	var drives []Drive
 	for route, segs := range routeSegs {
 		sort.Slice(segs, func(i, j int) bool { return segNum(segs[i]) < segNum(segs[j]) })
-		var earliest int64 = 1 << 62
+		var mtimes []int64
 		var sizeKB int64
 		camSet := map[string]bool{}
 		lastQ := ""
@@ -125,9 +125,7 @@ func listLocal() []Drive {
 				name := f.Name()
 				if strings.HasSuffix(name, ".hevc") {
 					camSet[name] = true
-					if mt := info.ModTime().Unix(); mt < earliest {
-						earliest = mt
-					}
+					mtimes = append(mtimes, info.ModTime().Unix())
 				}
 				if name == "qcamera.ts" {
 					lastQ = filepath.Join(segPath, name) // segs sorted asc -> last wins
@@ -144,8 +142,8 @@ func listLocal() []Drive {
 		stamp := recordedStamp(route)
 		if stamp == "" {
 			stamp = route
-			if earliest < (1 << 62) {
-				stamp = stampFromEpoch(earliest)
+			if e := earliestSaneMtime(mtimes); e > 0 {
+				stamp = stampFromEpoch(e)
 			}
 		}
 		audio := lastQ != "" && hasAudioFile(lastQ)
@@ -163,7 +161,7 @@ for r in $(ls -1d *--*/ 2>/dev/null | sed -E "s#--[0-9]+/##" | sort -u); do
   [ "$r" = "boot" ] && continue
   cnt=$(ls -1d ${r}--*/ 2>/dev/null | wc -l | tr -d " ")
   [ "$cnt" = "0" ] && continue
-  mt=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] && stat -c %Y "$f"; done | sort -n | head -1)
+  mt=$(for f in ${r}--*/*.hevc; do [ -e "$f" ] && stat -c %Y "$f"; done | sort -n | awk '{a[NR]=$1} END{if(NR==0)exit; mx=a[NR]; for(i=1;i<=NR;i++) if(mx-a[i]<86400){print a[i]; exit}}')
   cams=$(ls ${r}--*/*.hevc 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u | tr "\n" "," | sed "s/,$//")
   sz=$(du -sk ${r}--* 2>/dev/null | awk "{s+=\$1} END{print s+0}")
   echo "${r}|${mt}|${cams}|${cnt}|${sz}"
@@ -200,7 +198,9 @@ func listDeviceWith(c *ssh.Client) []Drive {
 		stamp := route
 		if mt, err := strconv.ParseInt(f[1], 10, 64); err == nil && mt > 0 {
 			stamp = stampFromEpoch(mt)
-			recordStamp(route, stamp) // pin the device's authoritative stamp
+			// Pin the device's authoritative stamp, repairing an earlier pin that was
+			// poisoned by a pre-clock-sync first segment.
+			pinDeviceStamp(route, stamp)
 		}
 		var cams []string
 		for _, cam := range strings.Split(f[2], ",") {

@@ -18,13 +18,22 @@ func mp4Duration(path string) float64 {
 	return d
 }
 
-// runFFmpegProgress runs ffmpeg and reports live percentage for the long re-encodes
-// (combined / 360 / vertical). Without it a multi-hour drive renders for tens of
-// minutes emitting nothing at all, which is indistinguishable from the app hanging.
+// runFFmpegProgress runs ffmpeg and reports live percentage for every render pass —
+// the per-camera mux AND the long re-encodes (combined / 360 / vertical). Without it a
+// multi-hour drive renders for many minutes emitting nothing at all, which is
+// indistinguishable from the app hanging.
+//
+// It tracks progress two ways because ffmpeg reports differently per pass:
+//   - re-encodes report a valid out_time (elapsed media seconds) → percent vs totalSecs.
+//   - a stream copy of raw HEVC reports out_time=N/A but a valid frame= counter →
+//     percent vs totalFrames.
+//
+// Whichever is available is used, so both the fast copy pass and the slow encode pass
+// get a moving bar. Pass 0 for a total that doesn't apply.
 //
 // ffmpeg's -progress stream is read from ITS OWN stdout via a pipe (never inherited),
 // so it can't pollute the core's --json event stream on our stdout.
-func runFFmpegProgress(args []string, totalSecs float64, label string) error {
+func runFFmpegProgress(args []string, totalSecs float64, totalFrames int, label string) error {
 	full := append([]string{"-progress", "pipe:1", "-nostats"}, args...)
 	cmd := exec.Command("ffmpeg", full...)
 	pipe, err := cmd.StdoutPipe()
@@ -40,23 +49,27 @@ func runFFmpegProgress(args []string, totalSecs float64, label string) error {
 	last := -1.0
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())
-		secs := -1.0
-		// Both keys are reported in MICROseconds (out_time_ms is a long-standing
-		// ffmpeg misnomer). Early lines can read "N/A", which simply fails to parse.
-		for _, k := range []string{"out_time_us=", "out_time_ms="} {
-			if strings.HasPrefix(line, k) {
-				if v, e := strconv.ParseFloat(strings.TrimPrefix(line, k), 64); e == nil {
-					secs = v / 1e6
-				}
-				break
+		pct := -1.0
+		switch {
+		case strings.HasPrefix(line, "out_time_us="), strings.HasPrefix(line, "out_time_ms="):
+			// Both keys are reported in MICROseconds (out_time_ms is a long-standing
+			// ffmpeg misnomer). Reads "N/A" during a stream copy — then we fall to frame=.
+			v := strings.SplitN(line, "=", 2)[1]
+			if secs, e := strconv.ParseFloat(v, 64); e == nil && totalSecs > 0 {
+				pct = secs / 1e6 / totalSecs * 100
 			}
-		}
-		if secs < 0 || totalSecs <= 0 {
+		case strings.HasPrefix(line, "frame="):
+			if f, e := strconv.Atoi(strings.TrimPrefix(line, "frame=")); e == nil && totalFrames > 0 {
+				pct = float64(f) / float64(totalFrames) * 100
+			}
+		default:
 			continue
 		}
-		pct := secs / totalSecs * 100
+		if pct < 0 {
+			continue
+		}
 		if pct > 99.5 {
-			pct = 99.5 // the last 0.5% is the mux/finalize; 100 comes from the caller
+			pct = 99.5 // the last bit is mux/finalize; 100 comes from the caller
 		}
 		if pct-last >= 0.5 {
 			last = pct
