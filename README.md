@@ -26,17 +26,44 @@ SSH, `scp`, and manual `ffmpeg` work. Comma Sync does it all for you:
 *Follows your system's light or dark appearance. All screenshots use made-up example data — drive names, sizes, and paths are not real.*
 
 - 🔍 **Auto-discovers** the device on your WiFi (its IP usually changes every connect).
-- ⬇️ **Pulls only new drives** — a ledger tracks what's done, so nothing re-downloads.
+- ⬇️ **Pulls only new drives** — a ledger tracks what's done, so nothing re-downloads. It
+  reconnects by itself if the comma drops mid-transfer, and won't stitch a drive that
+  didn't finish downloading.
 - 🎬 **Stitches** each drive into one MP4 per camera (road / wide / driver), named by the
   recording start time.
-- 🎞️ **Optional combined multi-angle video** — 2 cameras side by side, or 3 with a main angle
-  on top and the other two below. Re-render with a different layout anytime; it keeps each
-  layout as its own file and skips one it has already made.
-- 🔊 **Adds the microphone audio** when it was recorded.
+- 🔊 **Adds the microphone audio** when it was recorded — and keeps it in sync. The comma's
+  mic starts recording a few seconds *after* the cameras, which is exactly what makes
+  hand-rolled ffmpeg attempts drift; that gap is measured per drive and put back.
+- 🗂️ **Index of everything, everywhere** — one list merging what's still on the comma, what's
+  on your computer, and what survives only as finished video, with sizes, cameras and length.
 - ♻️ **Re-sync or re-stitch anything**, even old drives you deleted locally — it pulls them back.
+- 🗑️ **Optional auto-delete of raw chunks** — only after every video you asked for is verified
+  present and playable, so the originals are never thrown away before their replacement exists.
 - 🖥️ **Native app on macOS, Linux, and Windows** — pick folders, watch a progress bar,
-  browse/index every drive (on your computer *and* still on the comma), select some/all, and
-  download — with the ability to close it and come back while it keeps working.
+  browse/index every drive, select some/all, and download — with the ability to close it and
+  come back while it keeps working.
+
+### Optional extra videos
+
+Tick any of these and they're built alongside the per-camera files. Each one is rendered
+once and skipped on later runs, so re-stitching a drive is cheap.
+
+- 🎞️ **Combined multi-angle** — 2 cameras side by side, or 3 with a main angle on top and the
+  other two below. Change the layout and re-render anytime; each layout is kept as its own
+  file. The third slot can be set to **None** for a two-angle side-by-side on a 3-camera drive.
+- 🕶️ **360° VR video** — the wide camera fills the front, the driver camera wraps the rear, and
+  the sharp road camera is laid over the center. Real spherical metadata is written into the
+  file, so headsets and YouTube recognize it as 360° instead of a flat rectangle.
+- 📱 **Vertical video** — a portrait file for phones and socials: the wide and driver cameras
+  stacked, with the road camera sharpening the middle. Choose whether the driver goes on the
+  **top or the bottom** — render both and you get one file of each.
+
+On the 360° and vertical outputs the road camera is overlaid on the wide and **aligned to that
+drive's own footage**, since the true alignment shifts a little between drives with scene depth.
+
+> **Already deleted your raw chunks?** Drives that still have their per-camera videos show up
+> in the index as **"videos only"**, and the extra outputs above can be built straight from
+> them — no re-downloading, and it works even if the drive is long gone from the comma.
 
 > Tested on a **comma 3X** running [sunnypilot](https://github.com/sunnypilot/sunnypilot).
 > Should also work with stock openpilot and other forks that keep the standard layout.
@@ -128,9 +155,15 @@ The comma only allows computers whose SSH key is registered to it via a GitHub a
 ### 5. Use it
 
 1. Make sure the comma is powered on and on the **same WiFi** as your computer.
-2. Open **Comma Sync**, pick where to save videos, and click **Index Drives** to see every
-   drive and its size.
-3. Tick the ones you want (or **Download All**) and watch them transfer. Done!
+2. Open **Comma Sync**, pick where to save videos, and tick any of the extra outputs you
+   want (combined / 360° / vertical).
+3. Click **Index Drives** to see every drive and its size — on the comma *and* already on
+   your computer.
+4. Tick the ones you want (or **Download All**) and watch them transfer. Done!
+
+By default every selected drive is **downloaded first**, then everything is rendered
+afterwards — so the comma is finished with as quickly as possible and you can put the car
+away. You can switch to stitching each drive right after it downloads if you prefer.
 
 > A **phone hotspot** works fine for this — the transfer stays local between the comma and
 > your computer, so it doesn't use any of your carrier data. A proper **WiFi router** is
@@ -142,22 +175,55 @@ The comma only allows computers whose SSH key is registered to it via a GitHub a
 # Advanced (environment variables)
 
 Under the hood the app runs a single cross-platform **Go core** ([`core/`](core)) that you can
-also run from a terminal (`comma-sync sync` / `list` / `restitch <route>` / `discover`). Its
-behavior is tuned with environment variables:
+also run from a terminal:
+
+| Command | What it does |
+|---------|--------------|
+| `comma-sync discover` | Find the comma and print its IP |
+| `comma-sync list` | List drives on this computer + still on the comma |
+| `comma-sync sync` | Download new drives and stitch them |
+| `comma-sync batch <route…>` | Process several drives in one run (all transfers, then all stitches) |
+| `comma-sync download <route>` | Download one drive's chunks only, no stitching |
+| `comma-sync restitch <route>` | Re-stitch one drive (re-downloads anything missing) |
+| `comma-sync update-check` | Check GitHub for a newer release |
+| `comma-sync version` | Print the core version |
+
+Add `--json` to `sync`/`batch`/`restitch` for a machine-readable progress stream.
+Behavior is tuned with environment variables:
+
+**Where things go**
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `ROOT` | `./Comma Footage` | Where stitched videos go |
 | `CHUNKS_DIR` | `ROOT/Raw HEVC Chunks` | Where raw chunks are kept |
+| `CLEAN_RAW` | `0` | `1` = delete a drive's chunks once every requested output is verified |
+
+**What gets made**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
 | `WITH_AUDIO` | `1` | Mux mic audio when present (`0` = video only) |
 | `WITH_COMBINED` | `0` | `1` = also render the combined multi-angle video |
-| `PRIMARY_CAM` / `SECONDARY_CAM` / `TERTIARY_CAM` | `road` / `wide` / `driver` | Combined-video slots (labels `road`\|`wide`\|`driver`) |
-| `CLEAN_RAW` | `0` | `1` = delete a drive's chunks after stitching |
+| `PRIMARY_CAM` / `SECONDARY_CAM` / `TERTIARY_CAM` | `road` / `wide` / `driver` | Combined-video slots (`road`\|`wide`\|`driver`, or `none` for the third) |
+| `WITH_360` | `0` | `1` = also render the 360° VR video (needs all three cameras) |
+| `WITH_VERTICAL` | `0` | `1` = also render the vertical phone video (needs wide + driver) |
+| `VERTICAL_DRIVER_POS` | `bottom` | Which pane the driver camera takes: `bottom`\|`top` |
+| `VERTICAL_FEATHER` | `0` | Pixels to soften the road overlay's edge; `0` = hard edge |
+
+**Transfer & connection**
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `SYNC_ORDER` | `all-first` | `all-first` downloads everything before stitching; `per-drive` stitches each drive as it lands |
 | `COMMA_IP` | _(empty)_ | Pin a fixed IP instead of auto-discovering |
 | `REMOTE_PORT` | `22` | SSH port (older devices used `8022`) |
 | `SSH_KEY` | `~/.ssh/id_ed25519` | Private key to authenticate with |
-| `USE_USB` | `0` | `1` = transfer over a USB-C/ADB link instead of WiFi (enable ADB on the comma; not faster than WiFi) |
+| `AUTO_DISCOVER` | `1` | `0` = skip the subnet scan (which can disturb weak WiFi); relies on mDNS or `COMMA_IP` |
+| `USE_USB` / `USB_PORT` | `0` / `2222` | Transfer over a USB-C/ADB link instead of WiFi (enable ADB on the comma; not faster than WiFi) |
 | `BWLIMIT` | _(none)_ | Cap the transfer rate (e.g. `3m` = 3 MB/s) to lower the comma's power draw if it reboots mid-transfer |
+| `SKIP_LATEST` / `MIN_AGE_SECS` | `1` / `120` | Skip a drive that's still being recorded until it's this many seconds old |
+| `FPS` | `20` | Frame rate of the recorded chunks |
 
 > **Legacy:** the original engine was a single bash script,
 > [`comma-sync.sh`](comma-sync.sh) (rsync + ssh + ffmpeg, macOS/Linux only). It's **retired** in
