@@ -13,6 +13,14 @@ import (
 
 const audioRate = 16000 // comma mic: 16 kHz mono
 
+// audioRenderVer identifies how a per-camera video's audio track was built. Bump it
+// whenever that changes, so videos made by an older version are RE-STITCHED instead of
+// being reused. Without this, re-stitching a drive whose per-camera videos already
+// exist keeps their old audio forever — the segment count is unchanged, so the reuse
+// check sees nothing wrong — and an audio fix silently never reaches finished drives.
+// "6" = mic warm-up gap only on the first segment; later shortfalls pad at the end.
+const audioRenderVer = "6"
+
 func localSegs(route string) []string {
 	entries, _ := os.ReadDir(chunksDir())
 	var segs []string
@@ -183,49 +191,87 @@ func fpsFloat() float64 {
 	return 20
 }
 
-// micGapSecs returns how long after the camera the microphone started in this segment,
-// read from qcamera.ts (audio stream start minus video stream start). 0 when they start
-// together, when either stream is missing, or when the value is implausible. Sub-10ms
-// differences are treated as zero — that's timestamp noise, not a real gap.
-func micGapSecs(qts string) float64 {
+// micGapSecs works out how far into a segment the microphone actually started, given
+// how much audio the segment really contains (audioDur) versus how long its video is.
+//
+// The container's stream start_time is useless here — qcamera.ts reports the same
+// start for both streams even when the microphone came alive ten seconds later — so
+// this works from the first real PACKET of each stream, cross-checked against how much
+// audio the segment actually holds.
+// maxMidDriveGap caps the head gap allowed anywhere except the very first segment.
+// The microphone warms up once, at the start of a recording; by the second segment it
+// is already running and cannot begin seconds late. A large apparent head gap there
+// means the segment's audio is short at the END (a truncated write or transfer), and
+// putting that shortfall at the front instead shoves the sound seconds late for the
+// rest of the drive.
+const maxMidDriveGap = 0.5
+
+func micGapSecs(qts, chunk string, segDur, audioDur float64, firstSegment bool) float64 {
+	// The microphone can be late at the START of a segment and can also stop slightly
+	// early at the END. Only the HEAD gap may be re-inserted as leading silence; a tail
+	// loss must be padded at the end instead. Lumping both at the front (which the plain
+	// "how much is missing" figure does) pushes the sound late by the tail amount.
+	head := 0.0
+	fv, okv := firstPacketPTS(qts, "v")
+	fa, oka := firstPacketPTS(qts, "a")
+	if okv && oka {
+		head = fa - fv
+	}
+	shortfall := segDur - audioDur
+	if shortfall <= 0.05 && head <= 0.05 {
+		return 0 // audio covers the segment and starts with it
+	}
+	if !firstSegment && head > maxMidDriveGap {
+		// Mid-drive: the mic was already running, so this shortfall belongs at the end.
+		logf("      segment audio is %.2fs short — padding the END (the mic was already running)", shortfall)
+		return 0
+	}
+
+	// Prefer the packet-timed head gap: it is the direct measurement, and it separates
+	// a late start from an early finish. Accept it only when it is physically
+	// consistent — the audio placed there has to fit inside the segment.
+	if head > 0.05 && head+audioDur <= segDur+0.5 {
+		// Those timestamps only describe qcamera.ts internally. Anchor them to the
+		// camera chunk the video is really built from, so the sound cannot sit ahead of
+		// the picture by however far qcamera's own video stream started late.
+		if chunk != "" {
+			if d := qcamChunkOffset(qts, chunk); d != 0 &&
+				head+d > 0 && head+d+audioDur <= segDur+0.5 {
+				logf("      qcamera runs %+.2fs vs the camera chunk — mic gap corrected to %.2fs", d, head+d)
+				return head + d
+			}
+		}
+		return head
+	}
+
+	// Packet timing unusable — some containers report the audio starting with the video
+	// even when it plainly does not. Fall back to the amount of audio that is missing,
+	// which can only be attributed to a late start — and only the first segment can
+	// have one.
+	if !firstSegment || shortfall <= 0.05 || shortfall >= segDur {
+		return 0
+	}
+	return shortfall
+}
+
+// firstPacketPTS returns the presentation time of the first packet of a stream
+// ("v" or "a"), which is when that stream's data actually begins.
+func firstPacketPTS(path, stream string) (float64, bool) {
 	out, err := exec.Command("ffprobe", "-v", "error",
-		"-show_entries", "stream=codec_type,start_time", "-of", "csv=p=0", qts).Output()
+		"-select_streams", stream, "-show_entries", "packet=pts_time",
+		"-of", "csv=p=0", "-read_intervals", "%+#1", path).Output()
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	var vs, as float64
-	haveV, haveA := false, false
-	for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		f := strings.Split(strings.TrimSpace(ln), ",")
-		if len(f) < 2 {
-			continue
-		}
-		v, e := strconv.ParseFloat(f[1], 64)
-		if e != nil {
-			continue
-		}
-		switch f[0] {
-		case "video":
-			if !haveV {
-				vs, haveV = v, true
-			}
-		case "audio":
-			if !haveA {
-				as, haveA = v, true
-			}
-		}
+	s := strings.TrimSpace(string(out))
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
 	}
-	if !haveV || !haveA {
-		return 0
+	v, err := strconv.ParseFloat(strings.Trim(s, " ,"), 64)
+	if err != nil {
+		return 0, false
 	}
-	switch g := as - vs; {
-	case g < 0.01:
-		return 0 // together (or audio marginally first) — nothing to re-insert
-	case g > 30:
-		return 0 // implausible; don't shove the whole segment into silence
-	default:
-		return g
-	}
+	return v, true
 }
 
 // segFirstHEVC returns a camera .hevc filename present in a segment (any camera —
@@ -262,6 +308,7 @@ func buildAudioPCM(dir string, segs []string, ref map[string]int) (string, float
 		return "", 0
 	}
 	hadAudio := false
+	var gapSecs []segGapInfo
 	for i, s := range segs {
 		// One ffmpeg decode per segment — on a long drive this is a slow, silent pass, so
 		// report it as its own progress phase instead of leaving the bar blank.
@@ -285,31 +332,35 @@ func buildAudioPCM(dir string, segs []string, ref map[string]int) (string, float
 		tbytes := int64(segDur*float64(audioRate)+0.5) * 2
 		var wrote int64
 		qts := filepath.Join(segPath, "qcamera.ts")
-		if _, err := os.Stat(qts); err == nil {
-			// The mic can start AFTER the camera in a segment. "first_pts=0" below
-			// normalizes the decoded audio to start at zero, which on its own would
-			// DELETE that gap and make the sound run ahead of the picture. So measure
-			// the gap and re-insert it as leading silence, keeping the segment's total
-			// length identical.
-			gap := micGapSecs(qts)
-			gapBytes := int64(gap*float64(audioRate)+0.5) * 2
-			if gapBytes > tbytes {
-				gapBytes = tbytes
-			}
-			if gapBytes > 0 {
-				out.Write(make([]byte, gapBytes))
-				wrote += gapBytes
-			}
+		if fi, err := os.Stat(qts); err == nil && fi.Size() > 0 {
+			// Decode the segment's audio in full FIRST, so we know exactly how much of
+			// it exists. That amount is what tells us when the microphone started — see
+			// micGapSecs. Trimming during the decode (the old approach) would destroy
+			// the very measurement we need.
 			tmp, _ := os.CreateTemp("", "comma_seg_*.pcm")
 			tmpName := tmp.Name()
 			tmp.Close()
 			cmd := exec.Command("ffmpeg", "-y", "-v", "error", "-i", qts,
-				"-map", "0:a:0", "-af", "aresample=async=1:first_pts=0,apad",
-				"-t", fmt.Sprintf("%.4f", segDur-gap), "-ar", strconv.Itoa(audioRate),
-				"-ac", "1", "-f", "s16le", tmpName)
+				"-map", "0:a:0", "-af", "aresample=async=1:first_pts=0",
+				"-ar", strconv.Itoa(audioRate), "-ac", "1", "-f", "s16le", tmpName)
 			if cmd.Run() == nil {
 				if data, err := os.ReadFile(tmpName); err == nil && len(data) > 0 {
 					hadAudio = true
+					audioDur := float64(len(data)/2) / float64(audioRate)
+					gap := micGapSecs(qts, filepath.Join(segPath, segFirstHEVC(segPath)), segDur, audioDur, segNum(s) == 0)
+					if gap > 0 {
+						gapSecs = append(gapSecs, segGapInfo{seg: s, secs: gap})
+					}
+					// Hold the content back by the measured gap, then trim/pad so the
+					// segment occupies exactly its slot and the next one starts on time.
+					gapBytes := int64(gap*float64(audioRate)+0.5) * 2
+					if gapBytes > tbytes {
+						gapBytes = tbytes
+					}
+					if gapBytes > 0 {
+						out.Write(make([]byte, gapBytes))
+						wrote += gapBytes
+					}
 					if int64(len(data)) > tbytes-wrote {
 						data = data[:tbytes-wrote]
 					}
@@ -328,8 +379,34 @@ func buildAudioPCM(dir string, segs []string, ref map[string]int) (string, float
 		os.Remove(out.Name())
 		return "", 0
 	}
+	reportMicGaps(gapSecs)
 	st, _ := os.Stat(out.Name())
 	return out.Name(), float64(st.Size()/2) / float64(audioRate)
+}
+
+// segGapInfo records that a segment's microphone started late.
+type segGapInfo struct {
+	seg  string
+	secs float64
+}
+
+// reportMicGaps says where the microphone was late, so a drive whose sound looks off at
+// the start can be explained from the log instead of guessed at.
+func reportMicGaps(g []segGapInfo) {
+	if len(g) == 0 {
+		return
+	}
+	var parts []string
+	total := 0.0
+	for _, x := range g {
+		total += x.secs
+		parts = append(parts, fmt.Sprintf("minute %d: %.1fs", segNum(x.seg), x.secs))
+	}
+	logf("      microphone started late in %d segment(s) — %s (silence inserted so the sound stays with the picture)",
+		len(g), strings.Join(parts, ", "))
+	if total > 0 {
+		logf("         total silence added: %.1fs", total)
+	}
 }
 
 // muxCamera writes one camera's MP4. With audio it stretches the PCM to exactly fill
@@ -343,7 +420,7 @@ func muxCamera(combinedHEVC, audioPCM string, audioDur float64, out string, segC
 	os.Remove(part)
 	// Stamp how many segments this was stitched from, so a later reuse check can tell
 	// whether the drive has since had more downloaded (a stale/partial output).
-	segTag := "comment=csync-segs=" + strconv.Itoa(segCount)
+	segTag := "comment=csync-segs=" + strconv.Itoa(segCount) + ";csync-audio=" + audioRenderVer
 	// Total length so the muxing shows a live percentage. Even though the video is a
 	// stream copy (fast), a big drive still takes real time to write, and without a bar
 	// this first pass looked frozen to the user.
@@ -414,6 +491,25 @@ func freeVariantPath(outdir, stamp, kind string) string {
 	}
 }
 
+// combinedRoles returns the camera roles that make up the combined video for this
+// drive, in order. Shared by the renderer and the completeness check so the two can
+// never disagree about which layout should exist. "none" (offered for the tertiary
+// slot) leaves that slot empty on purpose.
+func combinedRoles(outdir, stamp, suffix string) []string {
+	seen := map[string]bool{}
+	var roles []string
+	for _, r := range []string{primaryCam(), secondaryCam(), tertiaryCam()} {
+		if r == "" || r == "none" || seen[r] {
+			continue
+		}
+		if mp4OK(filepath.Join(outdir, stamp+"__"+r+suffix+".mp4")) {
+			roles = append(roles, r)
+			seen[r] = true
+		}
+	}
+	return roles
+}
+
 // combineVideo builds one optional multi-angle MP4 from the per-camera MP4s in outdir:
 // 2 cams side by side at native aspect; 3 -> primary across the top 2/3, secondary
 // bottom-left, tertiary bottom-right. Roles from PRIMARY/SECONDARY/TERTIARY_CAM (labels
@@ -424,23 +520,13 @@ func freeVariantPath(outdir, stamp, kind string) string {
 // exact layout it skips (re-encode not needed); otherwise it renders a NEW export to a free
 // name so a different layout never clobbers an existing one. Re-encodes (HW on macOS).
 func combineVideo(outdir, stamp, suffix string) {
-	seen := map[string]bool{}
-	var inputs, roles []string
-	for _, r := range []string{primaryCam(), secondaryCam(), tertiaryCam()} {
-		// "none" (offered for the tertiary slot in the UIs) leaves that slot empty on
-		// purpose: even on a 3-camera drive, the other two roles combine side by side.
-		if r == "" || r == "none" || seen[r] {
-			continue
-		}
-		p := filepath.Join(outdir, stamp+"__"+r+suffix+".mp4")
-		if mp4OK(p) {
-			inputs = append(inputs, p)
-			roles = append(roles, r)
-			seen[r] = true
-		}
-	}
-	if len(inputs) < 2 {
+	roles := combinedRoles(outdir, stamp, suffix)
+	if len(roles) < 2 {
 		return
+	}
+	var inputs []string
+	for _, r := range roles {
+		inputs = append(inputs, filepath.Join(outdir, stamp+"__"+r+suffix+".mp4"))
 	}
 	layout := strings.Join(roles, ",") // e.g. "road,driver,wide" (primary,bottom-left,bottom-right)
 
@@ -561,6 +647,12 @@ func stitchRoute(route string, collision bool) error {
 			// number of segments we have now — otherwise it's stale/partial (e.g. more
 			// chunks were downloaded since) and must be re-stitched.
 			if !mp4OK(p) || individualSegs(p) != len(segs) {
+				allExist = false
+				break
+			}
+			// Built by an older audio path — re-stitch so the fix actually lands.
+			if withAudio() && !individualAudioCurrent(p) {
+				logf("      %s was stitched by an older audio version — re-stitching it so the sound lines up", filepath.Base(p))
 				allExist = false
 				break
 			}

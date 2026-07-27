@@ -41,6 +41,14 @@ func individualSegs(path string) int {
 	return -1
 }
 
+// individualAudioCurrent reports whether a per-camera video's audio was built by the
+// CURRENT audio code. Files from an older version are re-stitched rather than reused,
+// so an audio fix actually reaches drives that were already processed.
+func individualAudioCurrent(path string) bool {
+	v, _ := mp4CommentTag(path, "csync-audio=")
+	return v == audioRenderVer
+}
+
 // outputFresh reports whether the output at `out` exists and is at least as new as
 // every input — used so a combined/360 video is rebuilt when its source per-camera
 // videos have been re-stitched (e.g. after more chunks were downloaded).
@@ -62,23 +70,81 @@ func outputFresh(out string, inputs []string) bool {
 // deleting raw chunks: chunks are only removed once the outputs they'd be needed to
 // re-create are confirmed present and complete.
 func stitchedOutputsOK(route string) bool {
+	ok, _ := stitchedOutputsStatus(route)
+	return ok
+}
+
+// stitchedOutputsStatus reports whether EVERY output this drive should have is present
+// and playable, and names the first thing missing.
+//
+// This is the gate for deleting raw chunks, so it must cover the extra outputs too, not
+// just the per-camera videos. The extra renderers report failure by logging and
+// returning, so a combined/360/vertical that failed to render is otherwise invisible
+// here — and the chunks needed to make it would be deleted while the video the user
+// asked for does not exist.
+func stitchedOutputsStatus(route string) (bool, string) {
 	segs := localSegs(route)
 	if len(segs) == 0 {
-		return false
+		return false, "no chunks"
 	}
 	cams := camerasOf(segs)
 	if len(cams) == 0 {
-		return false
+		return false, "no camera files"
 	}
 	stamp := routeStamp(route, segs)
 	outdir := filepath.Join(rootDir(), stamp)
 	for _, cam := range cams {
 		p := filepath.Join(outdir, stamp+"__"+labelFor(cam)+".mp4")
 		if !mp4OK(p) || individualSegs(p) != len(segs) {
-			return false
+			return false, labelFor(cam) + " video"
 		}
 	}
-	return true
+	return extrasPresent(outdir, stamp)
+}
+
+// extrasPresent checks the optional outputs the user switched on. An output that cannot
+// apply to this drive (a 360 needs all three cameras; a vertical needs wide + driver)
+// is not counted as missing.
+func extrasPresent(outdir, stamp string) (bool, string) {
+	has := func(lbl string) bool {
+		return mp4OK(filepath.Join(outdir, stamp+"__"+lbl+".mp4"))
+	}
+	if withCombined() {
+		if roles := combinedRoles(outdir, stamp, ""); len(roles) >= 2 {
+			layout := strings.Join(roles, ",")
+			found := false
+			ms, _ := filepath.Glob(filepath.Join(outdir, stamp+"__combined*.mp4"))
+			for _, m := range ms {
+				if combinedLayoutTag(m) == layout && mp4OK(m) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				return false, "combined video"
+			}
+		}
+	}
+	if with360() && has("road") && has("wide") && has("driver") {
+		if !mp4OK(filepath.Join(outdir, stamp+"__vr360.mp4")) {
+			return false, "360 video"
+		}
+	}
+	if withVertical() && has("wide") && has("driver") {
+		pos := verticalDriverPos()
+		found := false
+		ms, _ := filepath.Glob(filepath.Join(outdir, stamp+"__vertical*.mp4"))
+		for _, m := range ms {
+			if v, ok := mp4CommentTag(m, "csync-vertical="); ok && v == pos && mp4OK(m) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false, "vertical video"
+		}
+	}
+	return true, ""
 }
 
 // localRouteLooksComplete is the offline completeness heuristic, used only when the

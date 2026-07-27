@@ -72,12 +72,12 @@ func maybeCleanChunks(route string) {
 	if !cleanRaw() {
 		return
 	}
-	if !stitchedOutputsOK(route) {
-		logf("      keeping raw chunks for %s — stitched outputs not verified yet", route)
+	if ok, missing := stitchedOutputsStatus(route); !ok {
+		logf("      KEEPING raw chunks for %s — %s is missing, so they'd be needed to make it", route, missing)
 		return
 	}
 	removeRouteChunks(route)
-	logf("      raw chunks deleted for %s (outputs verified)", route)
+	logf("      raw chunks deleted for %s (every requested output verified)", route)
 }
 
 func stitchCompleteLocalUnprocessed() {
