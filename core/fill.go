@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 // A drive is stored as ~1-minute chunks per camera. Now and then a camera's chunk is
@@ -102,18 +105,62 @@ func fitPCM(path string, want int64) (string, func()) {
 func planFills(segs, cams []string) (ref map[string]int, have map[string]map[string]int, gaps []segGap) {
 	ref = map[string]int{}
 	have = map[string]map[string]int{}
-	for si, s := range segs {
-		emit(ProgressEvent{Type: "progress", Route: curRoute, Phase: "analyze",
-			Percent: float64(si) / float64(len(segs)) * 100, Message: "Checking chunk lengths"})
-		counts := map[string]int{}
+
+	// Counting frames means reading each chunk end to end (a raw .hevc carries no index),
+	// which is I/O-bound and independent per file — so run them concurrently. Same exact
+	// counts, a fraction of the wall time, and it matters most on an external drive.
+	type job struct{ seg, cam string }
+	var jobs []job
+	for _, s := range segs {
+		for _, c := range cams {
+			jobs = append(jobs, job{s, c})
+		}
+	}
+	counts := make([]int, len(jobs))
+	workers := runtime.NumCPU()
+	if workers > 8 {
+		workers = 8
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	var wg sync.WaitGroup
+	next := make(chan int)
+	var done int64
+	go func() {
+		for i := range jobs {
+			next <- i
+		}
+		close(next)
+	}()
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				p := filepath.Join(chunksDir(), jobs[i].seg, jobs[i].cam)
+				if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
+					counts[i] = countPackets(p)
+				}
+				n := atomic.AddInt64(&done, 1)
+				emit(ProgressEvent{Type: "progress", Route: curRoute, Phase: "analyze",
+					Percent: float64(n) / float64(len(jobs)) * 100, Message: "Checking chunk lengths"})
+			}
+		}()
+	}
+	wg.Wait()
+
+	// Assemble in segment order so the result (and any warning) is deterministic.
+	idx := map[job]int{}
+	for i, j := range jobs {
+		idx[j] = i
+	}
+	for _, s := range segs {
+		per := map[string]int{}
 		longest := 0
 		for _, c := range cams {
-			n := 0
-			p := filepath.Join(chunksDir(), s, c)
-			if fi, err := os.Stat(p); err == nil && fi.Size() > 0 {
-				n = countPackets(p)
-			}
-			counts[c] = n
+			n := counts[idx[job{s, c}]]
+			per[c] = n
 			if n > longest {
 				longest = n
 			}
@@ -122,9 +169,9 @@ func planFills(segs, cams []string) (ref map[string]int, have map[string]map[str
 			continue // nothing usable in this segment for any camera
 		}
 		ref[s] = longest
-		have[s] = counts
+		have[s] = per
 		for _, c := range cams {
-			if d := longest - counts[c]; d > 0 {
+			if d := longest - per[c]; d > 0 {
 				gaps = append(gaps, segGap{seg: s, cam: c, frames: d})
 			}
 		}

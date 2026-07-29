@@ -226,6 +226,19 @@ func camLagSecs(refPath, camPath, refLabel, label string) float64 {
 	if v, ok := lagCache[key]; ok {
 		return v
 	}
+	// Cameras stitched in the same run are frame-locked by construction: every segment is
+	// padded to the same frame count for every angle (see planFills), so identical length
+	// means identical timing and there is nothing to correct. Checking that costs one
+	// metadata read, where the correlation below decodes minutes of video to confirm the
+	// same zero. Only mismatched lengths — videos that were NOT built together, e.g. one
+	// rebuilt separately — can actually be offset, and those still take the full path.
+	if a, b := mp4Duration(refPath), mp4Duration(camPath); a > 0 && b > 0 {
+		if d := a - b; d < 0.1 && d > -0.1 {
+			lagCache[key] = 0
+			return 0
+		}
+		logf("      %s and %s differ in length by %.2fs — checking their timing", refLabel, label, a-b)
+	}
 	v := 0.0
 	if lag, ok := measureCamLag(refPath, camPath); ok && math.Abs(lag) >= lagMinSecs {
 		v = lag
