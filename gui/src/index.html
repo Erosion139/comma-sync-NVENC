@@ -135,6 +135,21 @@
       <div id="verticalRoles" class="roles hidden">
         <label class="role">Driver cam<select id="verticalPos"><option value="bottom">Bottom</option><option value="top">Top</option></select></label>
       </div>
+
+      <!-- ── GPU rendering (NVENC) ───────────────────────────────────────── -->
+      <div class="divider"></div>
+      <label class="toggle">
+        <span class="tmeta">
+          <b>Render on the graphics card (NVIDIA NVENC)</b>
+          <small>Encodes — and decodes — the combined / 360° / vertical videos on a GPU instead of the CPU. The per-camera videos are a straight copy of the comma's own footage and are never re-encoded, so this doesn't change them. If the card refuses a job, that render is redone on the CPU automatically.</small>
+        </span>
+        <input type="checkbox" id="nvenc" />
+        <span class="switch" aria-hidden="true"></span>
+      </label>
+      <div id="nvencOpts" class="roles hidden">
+        <label class="role">Graphics card<select id="nvencGpu"></select></label>
+        <small id="nvencNote" class="sub" style="flex-basis:100%;width:100%;margin-top:6px"></small>
+      </div>
     </section>
 
     <div class="actions">

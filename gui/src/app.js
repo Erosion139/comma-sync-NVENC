@@ -31,6 +31,8 @@ function opts() {
     vertical: $("withVertical").checked,
     vertical_pos: $("verticalPos").value,
     all_first: $("allFirst").checked,
+    nvenc: $("nvenc").checked,
+    nvenc_gpu: $("nvencGpu").value || "0",
   };
 }
 
@@ -247,6 +249,56 @@ $("verticalPos").addEventListener("change", (e) => localStorage.setItem("vertica
 // ---- sync order (default: download everything first) ------------------------
 $("allFirst").checked = localStorage.getItem("allFirst") !== "0";
 $("allFirst").addEventListener("change", (e) => localStorage.setItem("allFirst", e.target.checked ? "1" : "0"));
+
+// ---- GPU rendering (NVENC) --------------------------------------------------
+// Two controls: the on/off switch, and which card does the work. The card list
+// comes from the core (`comma-sync gpus --json` -> nvidia-smi), so the second
+// card is named rather than being an index you have to guess at.
+function syncNvencUI() { $("nvencOpts").classList.toggle("hidden", !$("nvenc").checked); }
+
+async function loadGPUs() {
+  const sel = $("nvencGpu");
+  const note = $("nvencNote");
+  const saved = localStorage.getItem("nvencGpu") || "0";
+  let list = [];
+  let nvencOK = null;
+  try {
+    const r = await invoke("list_gpus");
+    list = (r && r.gpus) || [];
+    nvencOK = r ? r.nvencAvailable : null;
+  } catch (_) { /* core not reachable yet — fall through to generic entries */ }
+
+  // No nvidia-smi (or it isn't on PATH): still let a card be chosen by index.
+  const generic = !list.length;
+  if (generic) list = [{ index: 0, name: "First card" }, { index: 1, name: "Second card" }];
+
+  sel.innerHTML = "";
+  for (const g of list) {
+    const o = document.createElement("option");
+    o.value = String(g.index);
+    o.textContent = `GPU ${g.index} — ${g.name}`;
+    sel.appendChild(o);
+  }
+  sel.value = saved;
+  if (!sel.value) sel.value = String(list[0].index);   // saved index no longer exists
+
+  if (nvencOK === false) {
+    note.textContent = "This ffmpeg has no NVENC encoder — renders will stay on the CPU. Reinstall ffmpeg (winget install Gyan.FFmpeg) to enable it.";
+  } else if (generic) {
+    note.textContent = "Couldn't read the card list (nvidia-smi not found) — pick by position instead. GPU 1 is your second card.";
+  } else {
+    note.textContent = "Renders run here; your other card stays free for your own work.";
+  }
+}
+
+$("nvenc").checked = localStorage.getItem("nvenc") === "1";
+syncNvencUI();
+$("nvenc").addEventListener("change", (e) => {
+  localStorage.setItem("nvenc", e.target.checked ? "1" : "0");
+  syncNvencUI();
+});
+$("nvencGpu").addEventListener("change", (e) => localStorage.setItem("nvencGpu", e.target.value));
+loadGPUs();
 
 // ---- update check -----------------------------------------------------------
 // On by default; the core reads only GitHub's public releases list (no data sent).
