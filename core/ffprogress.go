@@ -18,7 +18,27 @@ func mp4Duration(path string) float64 {
 	return d
 }
 
-// runFFmpegProgress runs ffmpeg and reports live percentage for every render pass —
+// runFFmpegProgress runs one render pass, on the GPU when that's turned on.
+//
+// Every ffmpeg command the core builds passes through here, which makes it the
+// one place that can decide where a render happens (see gpu.go). A GPU attempt
+// that fails for ANY reason — a driver hiccup, an ffmpeg build without NVENC, a
+// card busy with a game, a filter graph the encoder won't accept — is retried
+// immediately on the CPU with the original, untouched command. A GPU problem can
+// therefore cost you time on one render, never a drive.
+func runFFmpegProgress(args []string, totalSecs float64, totalFrames int, label string) error {
+	if gpuArgs, changed := gpuizeFFmpegArgs(args); changed {
+		logf("      rendering %s on the %s", label, gpuRenderNote())
+		err := runFFmpegOnce(gpuArgs, totalSecs, totalFrames, label)
+		if err == nil {
+			return nil
+		}
+		logf("      GPU render failed (%v) — redoing this one on the CPU", err)
+	}
+	return runFFmpegOnce(args, totalSecs, totalFrames, label)
+}
+
+// runFFmpegOnce runs ffmpeg and reports live percentage for every render pass —
 // the per-camera mux AND the long re-encodes (combined / 360 / vertical). Without it a
 // multi-hour drive renders for many minutes emitting nothing at all, which is
 // indistinguishable from the app hanging.
@@ -33,7 +53,7 @@ func mp4Duration(path string) float64 {
 //
 // ffmpeg's -progress stream is read from ITS OWN stdout via a pipe (never inherited),
 // so it can't pollute the core's --json event stream on our stdout.
-func runFFmpegProgress(args []string, totalSecs float64, totalFrames int, label string) error {
+func runFFmpegOnce(args []string, totalSecs float64, totalFrames int, label string) error {
 	full := append([]string{"-progress", "pipe:1", "-nostats"}, args...)
 	cmd := exec.Command("ffmpeg", full...)
 	pipe, err := cmd.StdoutPipe()

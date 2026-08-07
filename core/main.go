@@ -19,11 +19,13 @@ Usage:
   comma-sync restitch <route> [--json]   Re-stitch one drive (re-downloads if needed)
   comma-sync download <route> [--json]   Download one drive's chunks only (no stitch)
   comma-sync batch <route...> [--json]   Process several drives (all transfers, then stitches)
+  comma-sync gpus [--json]          List NVIDIA cards + whether this ffmpeg has NVENC
   comma-sync update-check [--json]  Check GitHub for a newer release
   comma-sync version
 
 Env: ROOT, CHUNKS_DIR, COMMA_IP, REMOTE_PORT, SSH_KEY, WITH_AUDIO,
-     CLEAN_RAW, SKIP_LATEST, MIN_AGE_SECS, FPS, USE_USB, USB_PORT`)
+     CLEAN_RAW, SKIP_LATEST, MIN_AGE_SECS, FPS, USE_USB, USB_PORT,
+     USE_NVENC, NVENC_GPU, NVDEC, NVENC_CODEC, NVENC_PRESET, NVENC_CQ`)
 }
 
 func fail(err error) {
@@ -106,6 +108,29 @@ func main() {
 		}
 		if err := cmdBatch(positional); err != nil {
 			fail(err)
+		}
+
+	// gpus backs the GUI's graphics-card picker: which NVIDIA cards this machine
+	// has, and whether the installed ffmpeg can actually drive them.
+	case "gpus":
+		gpus := listGPUs()
+		if jsonProgress {
+			out, _ := json.Marshal(map[string]any{
+				"nvencAvailable": nvencAvailable(),
+				"encoder":        nvencCodec() + "_nvenc",
+				"gpus":           gpus,
+			})
+			fmt.Println(string(out))
+		} else {
+			if !nvencAvailable() {
+				fmt.Println("ffmpeg has no " + nvencCodec() + "_nvenc encoder")
+			}
+			if len(gpus) == 0 {
+				fmt.Println("no NVIDIA cards reported (nvidia-smi not found?)")
+			}
+			for _, g := range gpus {
+				fmt.Printf("%d\t%s\n", g.Index, g.Name)
+			}
 		}
 
 	case "update-check":
