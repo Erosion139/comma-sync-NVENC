@@ -39,6 +39,13 @@ struct Opts {
     vertical_pos: String,
     #[serde(default = "default_true")]
     all_first: bool,
+    /// Render the combined / 360 / vertical videos on an NVIDIA card (NVENC)
+    /// instead of libx264 on the CPU.
+    #[serde(default)]
+    nvenc: bool,
+    /// Which card does it — a CUDA device index as a string ("0", "1", …).
+    #[serde(default)]
+    nvenc_gpu: String,
 }
 
 fn default_true() -> bool { true }
@@ -89,6 +96,13 @@ fn core_command(opts: &Opts, args: &[&str]) -> Command {
         cmd.env("VERTICAL_DRIVER_POS", &opts.vertical_pos);
     }
     cmd.env("SYNC_ORDER", if opts.all_first { "all-first" } else { "per-drive" });
+
+    // GPU rendering. NVENC_GPU is what keeps the render off the card you're
+    // working on: 0 is the first card, 1 the second, and so on.
+    cmd.env("USE_NVENC", if opts.nvenc { "1" } else { "0" });
+    if !opts.nvenc_gpu.is_empty() {
+        cmd.env("NVENC_GPU", &opts.nvenc_gpu);
+    }
     cmd
 }
 
@@ -109,6 +123,21 @@ fn list_drives(opts: Opts) -> Result<serde_json::Value, String> {
         return Err(String::from_utf8_lossy(&out.stderr).into_owned());
     }
     serde_json::from_slice(&out.stdout).map_err(|e| format!("parsing list: {e}"))
+}
+
+/// List the NVIDIA cards in this machine, and say whether the installed ffmpeg
+/// can actually use them. Backs the graphics-card picker in the UI.
+/// Returns {nvencAvailable, encoder, gpus: [{index, name}]}.
+#[tauri::command]
+fn list_gpus() -> Result<serde_json::Value, String> {
+    let out = Command::new(core_bin())
+        .args(["gpus", "--json"])
+        .output()
+        .map_err(|e| format!("running core: {e}"))?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).into_owned());
+    }
+    serde_json::from_slice(&out.stdout).map_err(|e| format!("parsing gpus: {e}"))
 }
 
 /// Ask the core whether a newer GUI release exists (reads GitHub's public release
@@ -192,6 +221,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             pick_folder,
             list_drives,
+            list_gpus,
             check_update,
             open_url,
             start_job,
