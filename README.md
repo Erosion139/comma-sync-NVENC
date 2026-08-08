@@ -1,4 +1,4 @@
-# Comma Sync
+# Comma Sync - (But with NVENC encodes and GPU assignment!)
 
 [![CI](https://github.com/sourylime/comma-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/sourylime/comma-sync/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
