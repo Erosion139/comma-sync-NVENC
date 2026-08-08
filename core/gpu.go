@@ -11,7 +11,7 @@ package main
 // Two knobs drive it, both set by the GUI:
 //
 //	USE_NVENC=1     render on the GPU instead of libx264
-//	NVENC_GPU=1     which card to use (CUDA device index; 0 = first, 1 = second)
+//	NVENC_GPU=1     which card to use (see "Which card is which" below)
 //
 // WHAT IT DOES NOT TOUCH: the per-camera videos. Those are a stream copy
 // (-c copy) of the comma's own HEVC — no encoding happens, so there is nothing
@@ -21,21 +21,50 @@ package main
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 )
 
+// ---- Which card is which ---------------------------------------------------
+//
+// A machine with two NVIDIA cards has at least three different numberings of
+// them, and they do not have to agree:
+//
+//   - Task Manager's "GPU 0 / GPU 1"        — Windows' own display ordering
+//   - nvidia-smi's index                    — PCI bus order
+//   - CUDA / NVENC's device ordinal         — what ffmpeg's -gpu flag means
+//
+// Only the third one decides where a render actually lands. Naming the dropdown
+// from nvidia-smi and then selecting with -gpu is how you end up asking for one
+// card and loading the other.
+//
+// So this file never assumes the lists match. It asks NVENC itself: run a
+// throwaway one-frame encode pinned to each index and read back the card name
+// ffmpeg reports for it. That is the same code path, the same enumeration and
+// the same driver the real render will use, so the answer cannot disagree with
+// what happens later.
+//
+// As a second measure, CUDA is asked to enumerate in PCI bus order — which is
+// what nvidia-smi uses — so the two line up where the driver honours it. The
+// probe is still the source of truth; this just makes the common case sane.
+// Set CUDA_DEVICE_ORDER yourself, or NVENC_PCI_ORDER=0, to leave it alone.
+func init() {
+	if os.Getenv("CUDA_DEVICE_ORDER") == "" && os.Getenv("NVENC_PCI_ORDER") != "0" {
+		os.Setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+	}
+}
+
 // ---- configuration ---------------------------------------------------------
 
 // useNVENC reports whether GPU rendering was asked for.
 func useNVENC() bool { return os.Getenv("USE_NVENC") == "1" }
 
-// nvencGPU is the CUDA device index the render runs on, as a string ready to
-// hand to ffmpeg. On a two-card machine device 0 is normally the card driving
-// your monitors; pointing this at 1 keeps that card free while long renders run
-// on the second one.
+// nvencGPU is the device ordinal the render runs on, as a string ready to hand
+// to ffmpeg. This is an NVENC/CUDA ordinal, not a Task Manager number — see the
+// note above, and trust the name the GUI shows next to it.
 func nvencGPU() string {
 	if n, err := strconv.Atoi(strings.TrimSpace(os.Getenv("NVENC_GPU"))); err == nil && n >= 0 {
 		return strconv.Itoa(n)
@@ -82,17 +111,42 @@ func nvencAvailable() bool {
 	return nvencOK
 }
 
-// GPUInfo is one card as reported by nvidia-smi.
+// GPUInfo is one card, numbered the way ffmpeg's -gpu flag numbers them.
 type GPUInfo struct {
 	Index int    `json:"index"`
 	Name  string `json:"name"`
 }
 
-// listGPUs enumerates the NVIDIA cards in this machine so the GUI can offer them
-// by name instead of making you guess an index. Returns an empty list when
-// nvidia-smi isn't present (no NVIDIA driver, or not on PATH) — the GUI then
-// falls back to plain numbered entries.
-func listGPUs() []GPUInfo {
+// nvencGPULine matches ffmpeg's own report of a card, e.g.
+//
+//	[ GPU #1 - < Quadro RTX 5000 > has Compute SM 7.5 ]
+//
+// which nvenc prints at verbose level for whichever device it was pointed at.
+var nvencGPULine = regexp.MustCompile(`GPU\s*#(\d+)\s*-\s*<\s*(.+?)\s*>`)
+
+// probeNVENCDevice pins a one-frame throwaway encode to device idx and reads
+// back the name ffmpeg reports for it. Costs a fraction of a second and writes
+// nothing (-f null). Returns false when there is no such device.
+func probeNVENCDevice(idx int) (string, bool) {
+	out, _ := exec.Command("ffmpeg", "-hide_banner", "-v", "verbose",
+		"-f", "lavfi", "-i", "color=c=black:s=64x64:r=1:d=1",
+		"-frames:v", "1",
+		"-c:v", nvencCodec()+"_nvenc", "-gpu", strconv.Itoa(idx),
+		"-f", "null", "-").CombinedOutput()
+	for _, m := range nvencGPULine.FindAllStringSubmatch(string(out), -1) {
+		// nvenc logs the index it actually opened; only trust a line for OUR index.
+		if n, err := strconv.Atoi(m[1]); err == nil && n == idx {
+			if name := strings.TrimSpace(m[2]); name != "" {
+				return name, true
+			}
+		}
+	}
+	return "", false
+}
+
+// smiGPUs lists the cards the way nvidia-smi orders them. Used to know how many
+// to probe for, and as the fallback list when probing isn't possible.
+func smiGPUs() []GPUInfo {
 	gpus := []GPUInfo{}
 	out, err := exec.Command("nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader").Output()
 	if err != nil {
@@ -110,6 +164,71 @@ func listGPUs() []GPUInfo {
 		gpus = append(gpus, GPUInfo{Index: idx, Name: strings.TrimSpace(parts[1])})
 	}
 	return gpus
+}
+
+var (
+	gpuOnce sync.Once
+	gpuList []GPUInfo
+	gpuSrc  string
+)
+
+// gpus returns the cards numbered as ffmpeg's -gpu flag numbers them, plus where
+// that numbering came from:
+//
+//	"nvenc"      — asked the encoder directly; the names are authoritative
+//	"nvidia-smi" — couldn't ask, so this ordering may not match what renders
+//	"none"       — no NVIDIA cards found
+//
+// Worked out once per run and reused.
+func gpus() ([]GPUInfo, string) {
+	gpuOnce.Do(func() {
+		gpuList, gpuSrc = buildGPUList()
+	})
+	return gpuList, gpuSrc
+}
+
+func buildGPUList() ([]GPUInfo, string) {
+	smi := smiGPUs()
+
+	if nvencAvailable() {
+		// Probe one past what nvidia-smi saw, in case it isn't installed or missed
+		// a card; a non-existent index fails instantly, so overshooting is cheap.
+		max := len(smi) + 1
+		if max < 2 {
+			max = 4
+		}
+		var probed []GPUInfo
+		for i := 0; i < max; i++ {
+			name, ok := probeNVENCDevice(i)
+			if !ok {
+				break // indices are contiguous; the first miss is the end
+			}
+			probed = append(probed, GPUInfo{Index: i, Name: name})
+		}
+		if len(probed) > 0 {
+			return probed, "nvenc"
+		}
+	}
+
+	if len(smi) > 0 {
+		return smi, "nvidia-smi"
+	}
+	return []GPUInfo{}, "none"
+}
+
+// nvencDeviceName names the card a given ordinal refers to, or "" if unknown.
+func nvencDeviceName(idx string) string {
+	n, err := strconv.Atoi(idx)
+	if err != nil {
+		return ""
+	}
+	list, _ := gpus()
+	for _, g := range list {
+		if g.Index == n {
+			return g.Name
+		}
+	}
+	return ""
 }
 
 // ---- the rewrite -----------------------------------------------------------
@@ -198,9 +317,15 @@ func gpuizeFFmpegArgs(args []string) ([]string, bool) {
 	return out, true
 }
 
-// gpuRenderNote describes the active setup for the log line.
+// gpuRenderNote describes the active setup for the log line — including the name
+// of the card, so the log says which one is really doing the work rather than
+// only which number was asked for.
 func gpuRenderNote() string {
-	s := "GPU " + nvencGPU() + " · " + nvencCodec() + "_nvenc"
+	s := "GPU " + nvencGPU()
+	if name := nvencDeviceName(nvencGPU()); name != "" {
+		s += " (" + name + ")"
+	}
+	s += " · " + nvencCodec() + "_nvenc"
 	if useNVDEC() {
 		s += " + nvdec"
 	}

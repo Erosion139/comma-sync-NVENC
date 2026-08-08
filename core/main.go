@@ -110,25 +110,32 @@ func main() {
 			fail(err)
 		}
 
-	// gpus backs the GUI's graphics-card picker: which NVIDIA cards this machine
-	// has, and whether the installed ffmpeg can actually drive them.
+	// gpus backs the GUI's graphics-card picker: the cards numbered the way
+	// ffmpeg's -gpu flag numbers them, and whether that numbering was confirmed
+	// with the encoder itself or only guessed at from nvidia-smi.
 	case "gpus":
-		gpus := listGPUs()
+		cards, src := gpus()
 		if jsonProgress {
 			out, _ := json.Marshal(map[string]any{
 				"nvencAvailable": nvencAvailable(),
 				"encoder":        nvencCodec() + "_nvenc",
-				"gpus":           gpus,
+				"source":         src,
+				"gpus":           cards,
 			})
 			fmt.Println(string(out))
 		} else {
 			if !nvencAvailable() {
 				fmt.Println("ffmpeg has no " + nvencCodec() + "_nvenc encoder")
 			}
-			if len(gpus) == 0 {
+			switch src {
+			case "nvenc":
+				fmt.Println("numbering confirmed with the encoder — these are what -gpu N selects:")
+			case "nvidia-smi":
+				fmt.Println("!! couldn't confirm with the encoder; this is nvidia-smi's order and may NOT match -gpu N:")
+			default:
 				fmt.Println("no NVIDIA cards reported (nvidia-smi not found?)")
 			}
-			for _, g := range gpus {
+			for _, g := range cards {
 				fmt.Printf("%d\t%s\n", g.Index, g.Name)
 			}
 		}
