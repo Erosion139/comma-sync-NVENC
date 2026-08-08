@@ -251,9 +251,13 @@ $("allFirst").checked = localStorage.getItem("allFirst") !== "0";
 $("allFirst").addEventListener("change", (e) => localStorage.setItem("allFirst", e.target.checked ? "1" : "0"));
 
 // ---- GPU rendering (NVENC) --------------------------------------------------
-// Two controls: the on/off switch, and which card does the work. The card list
-// comes from the core (`comma-sync gpus --json` -> nvidia-smi), so the second
-// card is named rather than being an index you have to guess at.
+// Two controls: the on/off switch, and which card does the work.
+//
+// The card list comes from the core, which works it out by asking the ENCODER
+// which card each -gpu number refers to — not from nvidia-smi or Task Manager,
+// whose numbering can disagree with it. On a two-card machine that difference is
+// the whole ballgame: it's what decides whether "Quadro" in this list really
+// means the Quadro. `source` tells us whether that check succeeded.
 function syncNvencUI() { $("nvencOpts").classList.toggle("hidden", !$("nvenc").checked); }
 
 async function loadGPUs() {
@@ -262,13 +266,15 @@ async function loadGPUs() {
   const saved = localStorage.getItem("nvencGpu") || "0";
   let list = [];
   let nvencOK = null;
+  let source = null;
   try {
     const r = await invoke("list_gpus");
     list = (r && r.gpus) || [];
     nvencOK = r ? r.nvencAvailable : null;
+    source = r ? r.source : null;
   } catch (_) { /* core not reachable yet — fall through to generic entries */ }
 
-  // No nvidia-smi (or it isn't on PATH): still let a card be chosen by index.
+  // Nothing detected at all: still let a card be chosen by number.
   const generic = !list.length;
   if (generic) list = [{ index: 0, name: "First card" }, { index: 1, name: "Second card" }];
 
@@ -284,10 +290,12 @@ async function loadGPUs() {
 
   if (nvencOK === false) {
     note.textContent = "This ffmpeg has no NVENC encoder — renders will stay on the CPU. Reinstall ffmpeg (winget install Gyan.FFmpeg) to enable it.";
-  } else if (generic) {
-    note.textContent = "Couldn't read the card list (nvidia-smi not found) — pick by position instead. GPU 1 is your second card.";
+  } else if (source === "nvenc") {
+    note.textContent = "Names confirmed with the encoder itself, so the card you pick here is the card that renders — regardless of how Windows or nvidia-smi number them.";
+  } else if (source === "nvidia-smi") {
+    note.textContent = "⚠ Couldn't confirm these with the encoder, so this is nvidia-smi's ordering and may not match which card actually renders. Watch the log — it names the card it used.";
   } else {
-    note.textContent = "Renders run here; your other card stays free for your own work.";
+    note.textContent = "Couldn't detect your cards — pick by number instead. The log names the card it actually used, so you can check.";
   }
 }
 
